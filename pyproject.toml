@@ -1,0 +1,13 @@
+[project]
+name = "hybridzuptins"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "polar>=0.0.127",
+    "polars>=1.39.3",
+    "rootutils>=1.0.7",
+]
