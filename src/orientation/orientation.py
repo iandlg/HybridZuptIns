@@ -27,16 +27,12 @@ def q2dcm(q: NDArray):
     Convert quaternion(s) to Direction Cosine Matrix (DCM).
     
     Parameters:
-        q: array of shape (4,) or (4, N) — quaternions [q1, q2, q3, q4]
+        q: array of shape (4, N) — quaternions [q1, q2, q3, q4]
     
     Returns:
         R: array of shape (3, 3) or (3, 3, N) — rotation matrices
     """
-    q = np.atleast_2d(q)
-    if q.shape[0] == 1 and q.shape[1] == 4:
-        q = q.T  # handle (1,4) input
     
-    single = q.shape[1] == 1 if q.ndim == 2 else False
     N = q.shape[1]
 
     q1, q2, q3, q4 = q[0], q[1], q[2], q[3]
@@ -74,4 +70,86 @@ def q2dcm(q: NDArray):
     R[1, 2] = u - t
     R[2, 1] = u + t
 
-    return R[:, :, 0] if single else R
+    return R
+
+def dcm2q(R: NDArray)->NDArray:
+    """
+    Convert directional cosine matrix (rotation matrix) to quaternion vector.
+
+    Args
+    R : np.ndarray
+        Rotation matrix, shape (3, 3, N)
+
+    Returns
+    q : np.ndarray
+        Quaternion vector [qx, qy, qz, qw], shape (4,) or (4, N)
+    """
+
+    N = R.shape[2]
+    q = np.zeros((4, N))
+
+    T = 1 + R[0, 0] + R[1, 1] + R[2, 2]  # (N,)
+
+    # --- Case 1: T > 1e-8 ---
+    mask1 = T > 1e-8
+    if np.any(mask1):
+        S = 0.5 / np.sqrt(T[mask1])
+        q[3, mask1] = 0.25 / S
+        q[0, mask1] = (R[2, 1, mask1] - R[1, 2, mask1]) * S
+        q[1, mask1] = (R[0, 2, mask1] - R[2, 0, mask1]) * S
+        q[2, mask1] = (R[1, 0, mask1] - R[0, 1, mask1]) * S
+
+    # --- Case 2: T <= 1e-8 ---
+    mask2 = ~mask1
+
+    # Sub-case 2a: R[0,0] is dominant diagonal
+    mask2a = mask2 & (R[0, 0] > R[1, 1]) & (R[0, 0] > R[2, 2])
+    if np.any(mask2a):
+        S = np.sqrt(1 + R[0, 0, mask2a] - R[1, 1, mask2a] - R[2, 2, mask2a]) * 2  # S = 4*qx
+        q[3, mask2a] = (R[2, 1, mask2a] - R[1, 2, mask2a]) / S
+        q[0, mask2a] = 0.25 * S
+        q[1, mask2a] = (R[0, 1, mask2a] + R[1, 0, mask2a]) / S
+        q[2, mask2a] = (R[0, 2, mask2a] + R[2, 0, mask2a]) / S
+
+    # Sub-case 2b: R[1,1] is dominant diagonal
+    mask2b = mask2 & ~mask2a & (R[1, 1] > R[2, 2])
+    if np.any(mask2b):
+        S = np.sqrt(1 + R[1, 1, mask2b] - R[0, 0, mask2b] - R[2, 2, mask2b]) * 2  # S = 4*qy
+        q[3, mask2b] = (R[0, 2, mask2b] - R[2, 0, mask2b]) / S
+        q[0, mask2b] = (R[0, 1, mask2b] + R[1, 0, mask2b]) / S
+        q[1, mask2b] = 0.25 * S
+        q[2, mask2b] = (R[1, 2, mask2b] + R[2, 1, mask2b]) / S
+
+    # Sub-case 2c: R[2,2] is dominant diagonal
+    mask2c = mask2 & ~mask2a & ~mask2b
+    if np.any(mask2c):
+        S = np.sqrt(1 + R[2, 2, mask2c] - R[0, 0, mask2c] - R[1, 1, mask2c]) * 2  # S = 4*qz
+        q[3, mask2c] = (R[1, 0, mask2c] - R[0, 1, mask2c]) / S
+        q[0, mask2c] = (R[0, 2, mask2c] + R[2, 0, mask2c]) / S
+        q[1, mask2c] = (R[1, 2, mask2c] + R[2, 1, mask2c]) / S
+        q[2, mask2c] = 0.25 * S
+
+    return q
+
+
+def Rn2b(ang:NDArray)->NDArray:
+    """
+    Rotation matrix from frame t to frame b given Euler angles.
+
+    Parameters:
+        ang : (3, N) array — [roll, pitch, heading] in radians
+
+    Returns:
+        R : (3, 3, N) array — rotation matrices
+    """
+    cr, sr = np.cos(ang[0]), np.sin(ang[0])
+    cp, sp = np.cos(ang[1]), np.sin(ang[1])
+    cy, sy = np.cos(ang[2]), np.sin(ang[2])
+
+    R = np.array([
+        [ cy*cp,          sy*cp,          -sp   ],
+        [-sy*cr + cy*sp*sr,  cy*cr + sy*sp*sr,  cp*sr ],
+        [ sy*sr + cy*sp*cr, -cy*sr + sy*sp*cr,  cp*cr ]
+    ])  # (3, 3, N)
+
+    return R
