@@ -1,7 +1,7 @@
 from numpy.typing import NDArray
 import numpy as np
 
-def rotation_stack_to_euler(R: NDArray) -> NDArray:
+def matrix_to_euler(R: NDArray) -> NDArray:
     """
     Convert a stack of rotation matrices to Euler angles using the convention:
 
@@ -10,17 +10,66 @@ def rotation_stack_to_euler(R: NDArray) -> NDArray:
         y = atan2(R21, R11)
 
     Args:
-        R : NDArray (3, 3, N)
+        R : NDArray (3, 3, N) or (3, 3)
+            Rotation matrices. If (3, 3), returns (3,) Euler angles.
 
     Returns:
-        NDArray (3, N)  -> [roll, pitch, yaw]
+        NDArray (3, N) or (3,)  -> [roll, pitch, yaw]
     """
+    R = np.asarray(R, dtype=float)
+    single = R.ndim == 2
+    if single:
+        R = R[:, :, np.newaxis]  # (3, 3, 1)
 
     r = np.arctan2(R[2, 1, :], R[2, 2, :])
     p = -np.arcsin(R[2, 0, :])
     y = np.arctan2(R[1, 0, :], R[0, 0, :])
 
-    return np.vstack((r, p, y))
+    result = np.vstack((r, p, y))
+    return result[:, 0] if single else result
+
+def euler_to_matrix(ang: NDArray)->NDArray:
+    """
+    Compute rotation matrices from Euler angles.
+
+    Parameters
+    ----------
+    ang : array_like, shape (3, N) or (3,)
+        Euler angles [roll, pitch, yaw] in radians.
+        If shape (3,), a single rotation matrix is returned.
+
+    Returns
+    -------
+    R : ndarray, shape (3, 3, N) or (3, 3)
+        Rotation matrix/matrices corresponding to the input Euler angles.
+    """
+    ang = np.asarray(ang, dtype=float)
+    single = ang.ndim == 1
+    if single:
+        ang = ang[:, np.newaxis]  # (3, 1)
+
+    cr, sr = np.cos(ang[0]), np.sin(ang[0])
+    cp, sp = np.cos(ang[1]), np.sin(ang[1])
+    cy, sy = np.cos(ang[2]), np.sin(ang[2])
+
+    # Build (3, 3, N) array — each [:, :, k] is one rotation matrix (transposed)
+    N = ang.shape[1]
+    R = np.empty((3, 3, N))
+
+    R[0, 0] =  cy*cp
+    R[0, 1] =  sy*cp
+    R[0, 2] = -sp
+    R[1, 0] = -sy*cr + cy*sp*sr
+    R[1, 1] =  cy*cr + sy*sp*sr
+    R[1, 2] =  cp*sr
+    R[2, 0] =  sy*sr + cy*sp*cr
+    R[2, 1] = -cy*sr + sy*sp*cr
+    R[2, 2] =  cp*cr
+
+    # Transpose each matrix: swap axes 0 and 1
+    R = R.transpose(1, 0, 2)
+
+    return R[:, :, 0] if single else R
 
 def q2dcm(q: NDArray):
     """
@@ -32,6 +81,10 @@ def q2dcm(q: NDArray):
     Returns:
         R: array of shape (3, 3) or (3, 3, N) — rotation matrices
     """
+    q = np.asarray(q, dtype=float)
+    single = q.ndim == 1
+    if single:
+        q = q[:, np.newaxis]  # (4, 1)
     
     N = q.shape[1]
 
@@ -70,20 +123,25 @@ def q2dcm(q: NDArray):
     R[1, 2] = u - t
     R[2, 1] = u + t
 
-    return R
+    return R[:,:,0] if single else R
 
 def dcm2q(R: NDArray)->NDArray:
     """
     Convert directional cosine matrix (rotation matrix) to quaternion vector.
 
-    Args
-    R : np.ndarray
-        Rotation matrix, shape (3, 3, N)
+    Args:
+        R : np.ndarray
+            Rotation matrix, shape (3, 3, N) or (3, 3).
+            If (3, 3), returns (4,) quaternion.
 
-    Returns
-    q : np.ndarray
-        Quaternion vector [qx, qy, qz, qw], shape (4,) or (4, N)
+    Returns:
+        q : np.ndarray
+            Quaternion vector [qx, qy, qz, qw], shape (4,) or (4, N)
     """
+    R = np.asarray(R, dtype=float)
+    single = R.ndim == 2
+    if single:
+        R = R[:, :, np.newaxis]  # (3, 3, 1)
 
     N = R.shape[2]
     q = np.zeros((4, N))
@@ -129,27 +187,42 @@ def dcm2q(R: NDArray)->NDArray:
         q[1, mask2c] = (R[1, 2, mask2c] + R[2, 1, mask2c]) / S
         q[2, mask2c] = 0.25 * S
 
-    return q
+    return q[:, 0] if single else q
 
 
 def Rn2b(ang:NDArray)->NDArray:
     """
-    Rotation matrix from frame t to frame b given Euler angles.
+    Function that calculates the rotation matrix for rotating a 
+    vector from coordinate frame t to the coordinate frame b, given a
+    vector of Euler angles.
 
     Parameters:
-        ang : (3, N) array — [roll, pitch, heading] in radians
+        ang : (3, N) or (3,) array — [roll, pitch, heading] in radians
+              If (3,), returns (3, 3) rotation matrix.
 
     Returns:
-        R : (3, 3, N) array — rotation matrices
+        R : (3, 3, N) or (3, 3) array — rotation matrices
     """
+    ang = np.asarray(ang, dtype=float)
+    single = ang.ndim == 1
+    if single:
+        ang = ang[:, np.newaxis]  # (3, 1)
+    
     cr, sr = np.cos(ang[0]), np.sin(ang[0])
     cp, sp = np.cos(ang[1]), np.sin(ang[1])
     cy, sy = np.cos(ang[2]), np.sin(ang[2])
 
-    R = np.array([
-        [ cy*cp,          sy*cp,          -sp   ],
-        [-sy*cr + cy*sp*sr,  cy*cr + sy*sp*sr,  cp*sr ],
-        [ sy*sr + cy*sp*cr, -cy*sr + sy*sp*cr,  cp*cr ]
-    ])  # (3, 3, N)
+    N = ang.shape[1]
+    R = np.empty((3, 3, N))
+    
+    R[0, 0] = cy*cp
+    R[0, 1] = sy*cp
+    R[0, 2] = -sp
+    R[1, 0] = -sy*cr + cy*sp*sr
+    R[1, 1] = cy*cr + sy*sp*sr
+    R[1, 2] = cp*sr
+    R[2, 0] = sy*sr + cy*sp*cr
+    R[2, 1] = -cy*sr + sy*sp*cr
+    R[2, 2] = cp*cr
 
-    return R
+    return R[:, :, 0] if single else R
