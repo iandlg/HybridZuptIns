@@ -20,6 +20,9 @@ class TimeSeries :
     def __post_init__(self):
         if len(self.t.shape) != 1:
             raise ValueError(f"t must be 1D, got shape {self.t.shape}")
+        
+        if not np.all(np.diff(self.t)>0) :
+            raise ValueError(f"t must be strictly increasing.")
 
     def __len__(self)->int:
         return self.t.shape[0]
@@ -59,7 +62,12 @@ class Trajectory(TimeSeries):
         """
         data = pl.read_csv(
             path, has_header=False
-        ).fill_null(0).fill_nan(0)        
+        ).filter(~pl.any_horizontal(pl.all().is_nan()))
+
+        # Keep only rows where timestamp is strictly increasing
+        data = data.filter(
+            pl.col("column_1") > pl.col("column_1").shift(1).fill_null(float("-inf"))
+        )
 
         pos_cols = [f"column_{i}" for i in range(2, 5)]
         rot_cols = [f"column_{i}" for i in range(5, 14)]
@@ -92,18 +100,9 @@ class Trajectory(TimeSeries):
         roll, pitch = euler[0], euler[1]
         yaw = np.unwrap(euler[2])
 
-        print(f"{roll[-1]= }")
-        print(f"{pitch[-1]= }")
-        print(f"{yaw[-1]= }")
-
         d_roll  = np.abs(np.diff(roll))
         d_pitch = np.abs(np.diff(pitch))
         d_yaw   = np.diff(yaw)
-
-        print(f"{d_roll[-1]= }")
-        print(f"{d_pitch[-1]= }")
-        print(f"{d_yaw[-1]= }")
-
 
         bad = np.nonzero((d_roll > 0.3) | (d_pitch > 0.3) | (d_yaw > 0.3))[0]
         bad = np.concatenate([bad, bad + 1])
@@ -148,6 +147,7 @@ class InertialData(TimeSeries):
     @classmethod
     def from_csv_int(cls, data_dir: Path, num: int) -> "InertialData":
         return cls.from_csv(data_dir / f"{num}_IMURaw.csv")
+
 
 
 if __name__ == "__main__":
