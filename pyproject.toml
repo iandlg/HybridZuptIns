@@ -9,5 +9,9 @@ dependencies = [
     "numpy>=2.4.4",
     "polar>=0.0.127",
     "polars>=1.39.3",
+    "pytest>=9.0.3",
     "rootutils>=1.0.7",
 ]
+
+[tool.pytest.ini_options]
+addopts = "-s"

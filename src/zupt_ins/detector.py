@@ -105,7 +105,6 @@ def _glrt(
             np.sum(window_gyr ** 2) / sigma2_g +
             np.sum(acc_residuals ** 2) / sigma2_a
         ) / W
-
     return T
 
 
@@ -117,6 +116,10 @@ if __name__ == "__main__":
     imu_data = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
 
     zupt, logL = detector(imu_data.u, cfg)
+
+    idx = 988
+    print(f"{zupt[idx] = }")
+    print(f"{logL[idx] = }")
 
     import matplotlib.pyplot as plt
 

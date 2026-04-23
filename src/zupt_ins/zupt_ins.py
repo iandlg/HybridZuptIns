@@ -13,7 +13,7 @@ from src.zupt_ins.initialization import INSConfig
 def smoothed_zupt_aided_ins(
         inertial: InertialData,
         simdata: INSConfig
-    ):
+    ) -> Tuple[NDArray, Trajectory]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
 
@@ -97,11 +97,15 @@ def smoothed_zupt_aided_ins(
             # Time update -------------------------------------------------- #
             x[:, n], quat[:, n] = navigation_equations(
                 x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g)
-
+            print(f"{x[:,n] = }")
+            print(f"{quat[:,n] = }")
             F[:, :, n], G = state_matrix(quat[:, n], u[:, n], Ts)
 
             dx[:, n]     = F[:, :, n] @ dx[:, n - 1]
             P[:, :, n]   = F[:, :, n] @ P[:, :, n - 1] @ F[:, :, n].T + G @ Q @ G.T
+            
+            print(f"{dx[:,n] = }")
+            print(f"{P[:,:,n] = }")
 
             dx_timeupd[:, n]   = dx[:, n]
             P_timeupd[:, :, n] = P[:, :, n]
@@ -119,8 +123,8 @@ def smoothed_zupt_aided_ins(
             # Segmentation decision ---------------------------------------- #
             if c > 0:
                 c += 1
-            if (np.sum(cov[3:6, n - 1]) > 0.1e-3 and
-                    np.sum(cov[3:6, n]) < 0.1e-3 and c == 0):
+            if (np.sum(cov[3:6, n - 1]) > simdata.segmentation_thrsld and
+                    np.sum(cov[3:6, n]) < simdata.segmentation_thrsld and c == 0):
                 c = 1
             if c == 30:
                 seg_end = n
@@ -144,7 +148,7 @@ def smoothed_zupt_aided_ins(
         # ------------------------------------------------------------------ #
         # Internal state compensation
         # ------------------------------------------------------------------ #
-        x[:,seg_start:seg_end] = compensate_internal_states(
+        x[:,seg_start:seg_end], quat[:,seg_start:seg_end] = compensate_internal_states(
             x[:, seg_start:seg_end], -dx_smooth[:, seg_start:seg_end], quat[:, seg_start:seg_end]
         )
         # Save results
@@ -455,4 +459,5 @@ if __name__ == "__main__":
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     simdata = INSConfig()
     
-    smoothed_zupt_aided_ins(inertial, simdata)
+    zupt, ins_traj = smoothed_zupt_aided_ins(inertial, simdata)
+

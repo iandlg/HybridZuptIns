@@ -77,6 +77,9 @@ class INSConfig:
     # Gravity — computed post-init if left as None
     g               : float         = None # type: ignore
 
+    # ZUPT aided INS - segmentation decision
+    segmentation_thrsld: float = 0.1e-3
+
     def __post_init__(self):
         if self.g is None:
             # Bypass frozen restriction for the derived field
