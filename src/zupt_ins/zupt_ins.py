@@ -97,18 +97,22 @@ def smoothed_zupt_aided_ins(
             # Time update -------------------------------------------------- #
             x[:, n], quat[:, n] = navigation_equations(
                 x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g)
-            print(f"{x[:,n] = }")
-            print(f"{quat[:,n] = }")
+            # print(f"{x[:,n] = }")
+            # print(f"{quat[:,n] = }")
             F[:, :, n], G = state_matrix(quat[:, n], u[:, n], Ts)
 
             dx[:, n]     = F[:, :, n] @ dx[:, n - 1]
             P[:, :, n]   = F[:, :, n] @ P[:, :, n - 1] @ F[:, :, n].T + G @ Q @ G.T
             
-            print(f"{dx[:,n] = }")
-            print(f"{P[:,:,n] = }")
+            # print(f"{dx[:,n] = }")
+            # print(f"{P[:,:,n] = }")
 
             dx_timeupd[:, n]   = dx[:, n]
             P_timeupd[:, :, n] = P[:, :, n]
+
+            # print(f"{dx_timeupd[:,n] = }")
+            # print(f"{P_timeupd[:,:,n] = }")
+
 
             # Zero-velocity update ----------------------------------------- #
             if zupt[n]:
@@ -119,6 +123,9 @@ def smoothed_zupt_aided_ins(
             # Symmetrise
             P[:, :, n] = (P[:, :, n] + P[:, :, n].T) / 2
             cov[:, n]  = np.diag(P[:, :, n])
+
+            # print(f"{dx[:,n] = }")
+            # print(f"{P[:,:,n] = }")
 
             # Segmentation decision ---------------------------------------- #
             if c > 0:
@@ -145,12 +152,17 @@ def smoothed_zupt_aided_ins(
             P_smooth[:, :, n] = (P_smooth[:, :, n] + P_smooth[:, :, n].T) / 2
             cov_smooth[:, n]  = np.diag(P_smooth[:, :, n])
 
+            # print(f"{dx_smooth[:,n] = }")
+            # print(f"{P_smooth[:,:,n] = }")
+
         # ------------------------------------------------------------------ #
         # Internal state compensation
         # ------------------------------------------------------------------ #
-        x[:,seg_start:seg_end], quat[:,seg_start:seg_end] = compensate_internal_states(
-            x[:, seg_start:seg_end], -dx_smooth[:, seg_start:seg_end], quat[:, seg_start:seg_end]
+
+        x[:,seg_start:seg_end+1], quat[:,seg_start:seg_end+1] = compensate_internal_states(
+            x[:, seg_start:seg_end+1], -dx_smooth[:, seg_start:seg_end+1], quat[:, seg_start:seg_end+1]
         )
+
         # Save results
         zupt_ins_trajectory = Trajectory(
             t = inertial.t,
