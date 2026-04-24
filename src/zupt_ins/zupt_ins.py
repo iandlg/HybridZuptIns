@@ -145,9 +145,6 @@ def smoothed_zupt_aided_ins(
             P_smooth[:, :, n] = (P_smooth[:, :, n] + P_smooth[:, :, n].T) / 2
             cov_smooth[:, n]  = np.diag(P_smooth[:, :, n])
 
-            # print(f"{dx_smooth[:,n] = }")
-            # print(f"{P_smooth[:,:,n] = }")
-
         # ------------------------------------------------------------------ #
         # Internal state compensation
         # ------------------------------------------------------------------ #
@@ -471,6 +468,6 @@ if __name__ == "__main__":
     ax.grid(visible=True)
     ax.plot(inertial.t, (inertial.u[1:3,:]**2).sum(axis=0), linewidth=0.5)
     ax.scatter(inertial.t[segs], 100*np.ones_like(segs), marker='x', c='r', s=5)
-    plt.show()
+
 
 

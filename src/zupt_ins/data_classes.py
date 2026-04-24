@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 from numpy.typing import NDArray
-from typing import Union, List, Optional
+from typing import Union, List, Optional, Tuple
 
 from src.zupt_ins import orientation
 
@@ -27,6 +27,48 @@ class TimeSeries :
     def __len__(self)->int:
         return self.t.shape[0]
     
+    def __getitem__(self, index: Union[List[int], int, NDArray, slice]):
+        return TimeSeries(
+            t=self.t[index],
+        )
+    
+    @staticmethod
+    def truncate_to_overlap(*time_series: 'TimeSeries') -> Tuple:
+        """
+        Truncate multiple time series to their overlapping time interval.
+        
+        Args:
+            *time_series: Variable number of TimeSeries objects to truncate.
+        
+        Returns:
+            List of truncated TimeSeries objects with synchronized time intervals.
+            Objects maintain their original class types (Trajectory, InertialData, etc.).
+        
+        Raises:
+            ValueError: If no time series provided or if time intervals don't overlap.
+        """        
+        if len(time_series) < 2:
+            raise ValueError("At least two TimeSeries must be provided")
+        
+        # Find overlapping time interval
+        t_start = max(ts.t[0] for ts in time_series)
+        t_end = min(ts.t[-1] for ts in time_series)
+        
+        if t_start >= t_end:
+            raise ValueError(
+                f"No overlapping time interval found. "
+                f"Start times: {[ts.t[0] for ts in time_series]}, "
+                f"End times: {[ts.t[-1] for ts in time_series]}"
+            )
+        
+        # Truncate each time series to the overlapping interval
+        truncated = []
+        for ts in time_series:
+            mask = (ts.t >= t_start) & (ts.t <= t_end)
+            truncated.append(ts[mask])
+        
+        return tuple(truncated)
+    
 
 @dataclass(frozen=True)
 class Trajectory(TimeSeries):
@@ -44,7 +86,7 @@ class Trajectory(TimeSeries):
         if self.vel is not None and self.vel.shape != (3, N):
             raise ValueError(f"vel must have shape (3, {N}), got {self.vel.shape}")
 
-    def __getitem__(self, index: Union[List[int], int, NDArray]):
+    def __getitem__(self, index: Union[List[int], int, NDArray, slice]) -> "Trajectory":
         return Trajectory(
             t=self.t[index],
             pos=self.pos[:,index],
@@ -109,7 +151,7 @@ class Trajectory(TimeSeries):
 
         keep = np.setdiff1d(np.arange(len(self.t)), bad)
         return self[keep]
-    
+
 
 @dataclass(frozen=True)
 class InertialData(TimeSeries):
@@ -121,7 +163,7 @@ class InertialData(TimeSeries):
         if self.u.shape != (6, N):
             raise ValueError(f"u must have shape (6, {N}), got {self.u.shape}")
 
-    def __getitem__(self, index: Union[int, List[int], NDArray])->'InertialData':
+    def __getitem__(self, index: Union[int, List[int], NDArray, slice]) -> "InertialData":
         return InertialData(
             t=self.t[index],
             u=self.u[:,index]
@@ -154,7 +196,20 @@ if __name__ == "__main__":
 
     imu = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     gt = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    print("IMU:")
+    
+    # Example: Truncate to overlapping time interval
+    imu_overlap, gt_overlap = TimeSeries.truncate_to_overlap(imu, gt)
+    print("Original lengths:")
+    print(f"  IMU: {len(imu)}")
+    print(f"  GT:  {len(gt)}")
+    print("\nOverlapping time interval:")
+    print(f"  Start: {imu_overlap.t[0]:.3f}s")
+    print(f"  End:   {imu_overlap.t[-1]:.3f}s")
+    print("Truncated lengths:")
+    print(f"  IMU: {len(imu_overlap)}")
+    print(f"  GT:  {len(gt_overlap)}")
+    
+    print("\nIMU:")
     print(imu.u.shape)
     print(imu.u[:, 9999])
 

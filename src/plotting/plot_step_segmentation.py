@@ -2,10 +2,8 @@ import rootutils
 PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
 
 import matplotlib.pyplot as plt
-from matplotlib.pylab import Figure, Axes
-from typing import Optional, Tuple, List
+from typing import List
 import numpy as np
-from numpy.typing import NDArray
 
 from src.zupt_ins.data_classes import Trajectory, InertialData
 
