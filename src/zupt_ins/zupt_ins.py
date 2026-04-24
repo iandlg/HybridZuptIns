@@ -3,7 +3,7 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import Tuple
+from typing import Tuple, List
 
 from src.zupt_ins import orientation
 from src.zupt_ins import detector
@@ -13,7 +13,7 @@ from src.zupt_ins.initialization import INSConfig
 def smoothed_zupt_aided_ins(
         inertial: InertialData,
         simdata: INSConfig
-    ) -> Tuple[NDArray, Trajectory]:
+    ) -> Tuple[NDArray, Trajectory, List[int]]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
 
@@ -110,10 +110,6 @@ def smoothed_zupt_aided_ins(
             dx_timeupd[:, n]   = dx[:, n]
             P_timeupd[:, :, n] = P[:, :, n]
 
-            # print(f"{dx_timeupd[:,n] = }")
-            # print(f"{P_timeupd[:,:,n] = }")
-
-
             # Zero-velocity update ----------------------------------------- #
             if zupt[n]:
                 K            = (P[:, :, n] @ H.T) @ np.linalg.inv(H @ P[:, :, n] @ H.T + R)
@@ -123,9 +119,6 @@ def smoothed_zupt_aided_ins(
             # Symmetrise
             P[:, :, n] = (P[:, :, n] + P[:, :, n].T) / 2
             cov[:, n]  = np.diag(P[:, :, n])
-
-            # print(f"{dx[:,n] = }")
-            # print(f"{P[:,:,n] = }")
 
             # Segmentation decision ---------------------------------------- #
             if c > 0:
@@ -185,7 +178,7 @@ def smoothed_zupt_aided_ins(
         else:
             break
 
-    return zupt, zupt_ins_trajectory
+    return zupt, zupt_ins_trajectory, seg
 
 def initialize_nav_eq(u:NDArray, init_heading: float, init_pos: NDArray)->Tuple[NDArray,NDArray]:
     """
@@ -469,7 +462,15 @@ def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tu
 
 if __name__ == "__main__":
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    simdata = INSConfig()
+    simdata = INSConfig(segmentation_thrsld=0.03)
     
-    zupt, ins_traj = smoothed_zupt_aided_ins(inertial, simdata)
+    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial, simdata)
+
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots()
+    ax.grid(visible=True)
+    ax.plot(inertial.t, (inertial.u[1:3,:]**2).sum(axis=0), linewidth=0.5)
+    ax.scatter(inertial.t[segs], 100*np.ones_like(segs), marker='x', c='r', s=5)
+    plt.show()
+
 
