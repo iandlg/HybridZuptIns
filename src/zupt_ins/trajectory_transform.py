@@ -59,8 +59,8 @@ def transform_position(
     ins_traj.pos[:3, :] = R @ ins_traj.pos[:3, :] + t
 
     # Rotate all orientation matrices.
-    for k in range(ins_traj.R.shape[2]):
-        ins_traj.R[:, :, k] = R @ ins_traj.R[:, :, k]
+    for k in range(ins_traj.R_nb.shape[2]):
+        ins_traj.R_nb[:, :, k] = R @ ins_traj.R_nb[:, :, k]
 
     return ins_traj
 
@@ -98,13 +98,13 @@ def euler_mse(
 
     # Apply trial rotation to every orientation matrix.
     R = orientation.euler_to_matrix(angles)
-    R_rotated = np.einsum('...ij,jk->...ik', ins_traj.R.transpose(2, 0, 1), R)  # (N,3,3)
+    R_rotated = np.einsum('...ij,jk->...ik', ins_traj.R_nb.transpose(2, 0, 1), R)  # (N,3,3)
 
     # Compute Euler angles for all frames at once.
     # eulers are shape (3,N)
     # R back to (3,3,N)
     ins_euler = orientation.matrix_to_euler(R_rotated.transpose(1,2,0)) 
-    gt_euler = orientation.matrix_to_euler(gt_traj.R)
+    gt_euler = orientation.matrix_to_euler(gt_traj.R_nb)
 
 
     # Roll and pitch: computed over ZUPT frames.
@@ -147,13 +147,13 @@ def transform_orientation(
     R = orientation.euler_to_matrix(result.x)
 
     # Apply optimal rotation to all orientation matrices (post-multiply).
-    new_ins_R = np.einsum('ijk,kl->ijl', ins_traj.R.transpose(2, 0, 1), R).transpose(1, 2, 0)
+    new_ins_R = np.einsum('ijk,kl->ijl', ins_traj.R_nb.transpose(2, 0, 1), R).transpose(1, 2, 0)
 
     # Return rotated orientations
     return Trajectory(
         t=ins_traj.t,
         pos=ins_traj.pos,
-        R=new_ins_R
+        R_nb=new_ins_R
     )
 
 def _wrapped_min_residuals(ins_vals, gt_vals):

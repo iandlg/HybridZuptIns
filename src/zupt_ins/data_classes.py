@@ -8,6 +8,7 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 from typing import Union, List, Optional, Tuple
+from scipy.spatial.transform import Rotation, Slerp
 
 from src.zupt_ins import orientation
 
@@ -73,7 +74,7 @@ class TimeSeries :
 @dataclass(frozen=True)
 class Trajectory(TimeSeries):
     pos: NDArray[np.floating]      # (3, N)   position in metres
-    R: NDArray[np.floating]        # (3, 3, N) rotation matrices
+    R_nb: NDArray[np.floating]        # (3, 3, N) rotation matrices
     vel: Optional[NDArray[np.floating]] = None  # (3,N) velocity in m/s
 
     def __post_init__(self):
@@ -81,8 +82,8 @@ class Trajectory(TimeSeries):
         N = len(self.t)
         if self.pos.shape != (3, N):
             raise ValueError(f"pos must have shape (3, {N}), got {self.pos.shape}")
-        if self.R.shape != (3, 3, N):
-            raise ValueError(f"R must have shape (3, 3, {N}), got {self.R.shape}")
+        if self.R_nb.shape != (3, 3, N):
+            raise ValueError(f"R must have shape (3, 3, {N}), got {self.R_nb.shape}")
         if self.vel is not None and self.vel.shape != (3, N):
             raise ValueError(f"vel must have shape (3, {N}), got {self.vel.shape}")
 
@@ -90,7 +91,7 @@ class Trajectory(TimeSeries):
         return Trajectory(
             t=self.t[index],
             pos=self.pos[:,index],
-            R=self.R[:,:,index]
+            R_nb=self.R_nb[:,:,index]
         )
 
     @classmethod
@@ -130,7 +131,7 @@ class Trajectory(TimeSeries):
             .transpose(1, 2, 0)                    # (N, 3, 3) → (3, 3, N)
         )
 
-        return cls(t=t, pos=pos, R=R).clean()
+        return cls(t=t, pos=pos, R_nb=R).clean()
     
     @classmethod
     def from_csv_int(cls, data_dir: Path, num: int) -> "Trajectory":
@@ -138,7 +139,7 @@ class Trajectory(TimeSeries):
 
     def clean(self) -> "Trajectory":
         """Remove entries with implausible Euler-angle jumps."""
-        euler = orientation.matrix_to_euler(self.R)
+        euler = orientation.matrix_to_euler(self.R_nb)
         roll, pitch = euler[0], euler[1]
         yaw = np.unwrap(euler[2])
 
@@ -151,7 +152,78 @@ class Trajectory(TimeSeries):
 
         keep = np.setdiff1d(np.arange(len(self.t)), bad)
         return self[keep]
+    
+    def temporal_alignment(self, inertial_t: NDArray) -> "Trajectory":
+        """
+        Aligns the instance trajectory to provided measurement timestamps via interpolation.
 
+        Position is interpolated linearly. Rotations are interpolated using SLERP
+        (Spherical Linear Interpolation) on SO(3), which guarantees valid rotation
+        matrices and follows the shortest geodesic path between orientations.
+
+        Parameters
+        ----------
+        inertial_t : np.ndarray, shape (N,)
+            Timestamps of the inertial measurements in seconds.
+
+        Returns
+        -------
+        Trajectory
+            Instance trajectory resampled at the inertial timestamps,
+            with the same time base as `inertial_t`.
+        """
+        t_gt  = self.t
+        pos_gt = self.pos                        # (3, N)
+        R_gt   = self.R_nb.transpose(2, 0, 1)       # (N, 3, 3)
+
+        # --- zero-order-hold extension on the left ---
+        if inertial_t[0] < t_gt[0]:
+            t_gt   = np.concatenate([[inertial_t[0]], t_gt])
+            pos_gt = np.hstack([pos_gt[:, :1], pos_gt])
+            R_gt   = np.concatenate([R_gt[:1], R_gt], axis=0)
+
+        # --- zero-order-hold extension on the right ---
+        if inertial_t[-1] > t_gt[-1]:
+            t_gt   = np.concatenate([t_gt, [inertial_t[-1]]])
+            pos_gt = np.hstack([pos_gt, pos_gt[:, -1:]])
+            R_gt   = np.concatenate([R_gt, R_gt[-1:]], axis=0)
+
+        # Interpolate position
+        pos = np.vstack([
+            np.interp(inertial_t, t_gt, pos_gt[i])
+            for i in range(3)
+        ])
+
+        # SLERP for rotations — (N, 3, 3) expected by Rotation
+        slerp = Slerp(t_gt, Rotation.from_matrix(R_gt, assume_valid=False))
+        R = slerp(inertial_t).as_matrix().transpose(1, 2, 0)  # back to (3, 3, N)
+
+        return Trajectory(t=inertial_t, pos=pos, R_nb=R)
+
+    def step_vectors(self, step_seg: List[int]) -> NDArray[np.floating]:
+        """
+        Compute body-frame step vectors from step segmentation indices.
+
+        For each consecutive pair of step segment indices (k-1, k), the step
+        vector is the displacement in the body frame at step k-1:
+            step[:, k-1] = R_nb[:, :, seg[k-1]].T @ (pos[:, seg[k]] - pos[:, seg[k-1]])
+
+        Args:
+            step_seg: List of N_steps+1 indices marking step boundaries.
+
+        Returns:
+            steps: (3, N_steps) array of body-frame step vectors.
+        """
+        seg = np.asarray(step_seg)
+
+        pos_start = self.pos[:, seg[:-1]]   # (3, N_steps)
+        pos_end   = self.pos[:, seg[1:]]    # (3, N_steps)
+        R_start   = self.R_nb[:, :, seg[:-1]]  # (3, 3, N_steps)
+
+        displacements = pos_end - pos_start                         # (3, N_steps)
+        steps = np.einsum('ijk,jk->ik', R_start.transpose(1, 0, 2), displacements)
+
+        return steps
 
 @dataclass(frozen=True)
 class InertialData(TimeSeries):
@@ -214,14 +286,14 @@ if __name__ == "__main__":
     print(imu.u[:, 9999])
 
     print("\nGround truth:")
-    print(gt.R.shape)
+    print(gt.R_nb.shape)
     print(gt.t.shape)
     print(gt.pos.shape)
     idx = 9999
-    print(gt.R[:, :, idx])
+    print(gt.R_nb[:, :, idx])
     print("\nFirst element of rotation matrix :")
-    print(f"{gt.R[0,0,idx] = }")
-    print(f"{gt.R[2,2,idx] = }")
+    print(f"{gt.R_nb[0,0,idx] = }")
+    print(f"{gt.R_nb[2,2,idx] = }")
 
     print("\nFirst element of pos :")
     print(f"{gt.pos[0,idx] = }")

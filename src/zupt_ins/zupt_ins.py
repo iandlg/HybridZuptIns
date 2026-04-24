@@ -157,7 +157,7 @@ def smoothed_zupt_aided_ins(
         zupt_ins_trajectory = Trajectory(
             t = inertial.t,
             pos = x[0:3, :],
-            R = orientation.euler_to_matrix(x[6:9, :])
+            R_nb = orientation.euler_to_matrix(x[6:9, :])
         )
 
         # ------------------------------------------------------------------ #

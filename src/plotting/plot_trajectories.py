@@ -48,8 +48,8 @@ def plot_groundtruth_vs_inertial_orientations(
         ins_traj: Trajectory,
         gt_traj: Trajectory,
 ):
-    ins_euler = orientation.matrix_to_euler(ins_traj.R)  # (3, N)
-    gt_euler = orientation.matrix_to_euler(gt_traj.R)    # (3, N)
+    ins_euler = orientation.matrix_to_euler(ins_traj.R_nb)  # (3, N)
+    gt_euler = orientation.matrix_to_euler(gt_traj.R_nb)    # (3, N)
 
     labels = ['Roll', 'Pitch', 'Yaw']
     fig, axs = plt.subplots(1, 3, figsize=(12, 3))
@@ -102,7 +102,6 @@ if __name__ == "__main__":
     from src.zupt_ins.initialization import INSConfig
     from src.zupt_ins.data_classes import TimeSeries
     from src.zupt_ins.zupt_ins import smoothed_zupt_aided_ins
-    from src.zupt_ins.data_preprocessing import temporal_alignment
     from src.zupt_ins.trajectory_transform import transform_position, transform_orientation
 
     # Load data
@@ -110,24 +109,14 @@ if __name__ == "__main__":
     gt_traj = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     simdata = INSConfig(segmentation_thrsld=0.03)
 
-    # Data preprocessing to fit gt and imu data
-    print("Original lengths:")
-    print(f"  IMU: {len(inertial)}")
-    print(f"  GT:  {len(gt_traj)}")
-    interial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
-    print("\nOverlapping time interval:")
-    print(f"  Start: {inertial.t[0]:.3f}s")
-    print(f"  End:   {inertial.t[-1]:.3f}s")
-    print("Truncated lengths:")
-    print(f"  IMU: {len(interial_trunc)}")
-    print(f"  GT:  {len(gt_traj_trunc)}")
-
-    gt_traj_aligned = temporal_alignment(interial_trunc.t, gt_traj_trunc)
+    # Data preprocessing to fit gt to imu data
+    inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
+    gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
 
     # Compute trajectory from inertial data
-    zupt, ins_traj, segs = smoothed_zupt_aided_ins(interial_trunc, simdata)
+    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial_trunc, simdata)
 
-
+    # Rigidly transform the positions and orientations of the computed trajectory
     ins_traj_aligned = transform_position(ins_traj, gt_traj_aligned, zupt)
     ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3))
 
