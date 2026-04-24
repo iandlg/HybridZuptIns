@@ -2,7 +2,7 @@ import rootutils
 PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=False)
 
 import matplotlib.pyplot as plt
-from typing import List, Union
+from typing import List, Union, Optional
 import numpy as np
 from numpy.typing import NDArray
 
@@ -14,7 +14,7 @@ def plot_inertialdata_and_stepsegm(
     ):
     fig, ax = plt.subplots()
     ax.grid(visible=True)
-    ax.plot(inertial.t, (inertial.u[1:3, :] ** 2).sum(axis=0), linewidth=0.5, zorder=2)
+    ax.plot(inertial.t, (inertial.u[0:3, :] ** 2).sum(axis=0), linewidth=0.5, zorder=2)
     ax.scatter(inertial.t[segs], 100 * np.ones_like(segs), marker='x', c='r', s=5, zorder=1)
 
 
@@ -22,12 +22,17 @@ def plot_step_lengths(
         trajs: Union[List[Trajectory], Trajectory],
         gt_traj: Trajectory,
         segs: List[int],
-):
+): 
+    """
+    Plots 3D length between consecutive steps with respect to time
+    """
     if isinstance(trajs, Trajectory):
         trajs = [trajs]
-
+    
+    dims = slice(0,3)
+    print(f"{gt_traj.pos[dims, segs].T.shape = }")
     gt_step_lengths = np.sqrt(
-        np.sum(np.diff(gt_traj.pos[:, segs].T, axis=0) ** 2, axis=1)
+        np.sum(np.diff(gt_traj.pos[dims, segs].T, axis=0) ** 2, axis=1)
     )
 
     fig, ax = plt.subplots()
@@ -36,7 +41,7 @@ def plot_step_lengths(
 
     for i, traj in enumerate(trajs):
         step_lengths = np.sqrt(
-            np.sum(np.diff(traj.pos[:, segs].T, axis=0) ** 2, axis=1)
+            np.sum(np.diff(traj.pos[dims, segs].T, axis=0) ** 2, axis=1)
         )
         ax.plot(traj.t[segs[:-1]], step_lengths,
                 label=getattr(traj, 'name', f'Trajectory {i + 1}'))
@@ -93,6 +98,59 @@ def plot_step_vectors(
 
     plt.tight_layout()
 
+def plot_step_vector_components(
+        steps_list: Union[List[NDArray[np.floating]], NDArray[np.floating]],
+        steps_gt: NDArray[np.floating],
+        t:NDArray[np.floating],
+        labels: Optional[List[str]] = None,
+):
+    """
+    Plot step vector components (horizontal length, vertical, yaw angle)
+    for ground truth and one or more inertial step vector arrays.
+
+    Parameters
+    ----------
+    steps_list : NDArray shape (3, N) or list of such arrays
+        Body-frame step vectors for one or more inertial trajectories.
+    steps_gt : NDArray shape (3, N)
+        Body-frame step vectors for ground truth.
+    labels : list of str, optional
+        Legend labels for each entry in steps_list.
+    """
+    if isinstance(steps_list, np.ndarray):
+        steps_list = [steps_list]
+
+    if labels is None:
+        labels = [f'Trajectory {i + 1}' for i in range(len(steps_list))]
+
+    def _horizontal(s): return np.sqrt(s[0] ** 2 + s[1] ** 2)
+    def _vertical(s):   return s[2]
+    def _yaw(s):        return np.rad2deg(np.arctan2(s[1], s[0]))
+
+    components = [
+        ('Horizontal length', 'm',   _horizontal),
+        ('Vertical',          'm',   _vertical),
+        ('Yaw angle',         'deg', _yaw),
+    ]
+
+    n_steps = steps_gt.shape[1]
+    fig, axs = plt.subplots(1, 3, figsize=(14, 4))
+
+    for ax, (title, unit, fn) in zip(axs, components):
+        ax.plot(t, fn(steps_gt), color='black', linestyle='--',
+                linewidth=1, label='Ground truth')
+        for steps, label in zip(steps_list, labels):
+            ax.plot(t, fn(steps), label=label)
+        ax.set_title(title)
+        ax.set_xlabel('Time (s)')
+        ax.set_ylabel(unit)
+        ax.grid(visible=True)
+
+    axs[0].legend()
+    fig.tight_layout()
+    plt.show()
+
+
 if __name__ == "__main__":
     from src.zupt_ins.initialization import INSConfig
     from src.zupt_ins.zupt_ins import smoothed_zupt_aided_ins
@@ -121,6 +179,9 @@ if __name__ == "__main__":
 
     # Plot 
     plot_inertialdata_and_stepsegm(inertial_trunc, segs)
-    plot_step_lengths(ins_traj, gt_traj_aligned, segs)
+    plot_step_lengths(ins_traj_aligned, gt_traj_aligned, segs)
     plot_step_vectors(steps_ins, steps_gt)
+
+    # needs different navigation frame
+    plot_step_vector_components(steps_ins, steps_gt, ins_traj_aligned.t[segs[:-1]])
     plt.show()
