@@ -182,6 +182,6 @@ if __name__ == "__main__":
     plot_step_lengths(ins_traj_aligned, gt_traj_aligned, segs)
     plot_step_vectors(steps_ins, steps_gt)
 
-    # needs different navigation frame
+    ##### needs different navigation frame
     plot_step_vector_components(steps_ins, steps_gt, ins_traj_aligned.t[segs[:-1]])
     plt.show()
