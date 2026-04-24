@@ -28,7 +28,7 @@ def matrix_to_euler(R: NDArray) -> NDArray:
     result = np.vstack((r, p, y))
     return result[:, 0] if single else result
 
-def euler_to_matrix(ang: NDArray[np.floating])->NDArray:
+def euler_to_matrix(ang: NDArray[np.floating])->NDArray[np.floating]:
     """
     Compute rotation matrices from Euler angles.
 
