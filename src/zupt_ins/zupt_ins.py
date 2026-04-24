@@ -463,11 +463,11 @@ if __name__ == "__main__":
     
     zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial, simdata)
 
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots()
-    ax.grid(visible=True)
-    ax.plot(inertial.t, (inertial.u[1:3,:]**2).sum(axis=0), linewidth=0.5)
-    ax.scatter(inertial.t[segs], 100*np.ones_like(segs), marker='x', c='r', s=5)
+    # import matplotlib.pyplot as plt
+    # fig, ax = plt.subplots()
+    # ax.grid(visible=True)
+    # ax.plot(inertial.t, (inertial.u[1:3,:]**2).sum(axis=0), linewidth=0.5)
+    # ax.scatter(inertial.t[segs], 100*np.ones_like(segs), marker='x', c='r', s=5)
 
 
 
