@@ -3,12 +3,37 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import Tuple, List
+from typing import Tuple, List, Optional
+import scipy.linalg as  linalg
+from math import factorial
 
 from src.zupt_ins import orientation
 from src.zupt_ins import detector
 from src.zupt_ins.data_classes import InertialData, Trajectory
 from src.zupt_ins.initialization import INSConfig
+
+class StepDetector:
+    def __init__(self):
+        self.zupt_counter = 0
+        self.no_zupt_counter = 0
+        self.reached_no_zupt_counter = False
+
+    def __call__(self, k: int, z: int) -> Optional[int]:
+        if z == 1:
+            self.zupt_counter += 1
+            self.no_zupt_counter = 0
+        else:
+            self.no_zupt_counter += 1
+            self.zupt_counter = 0
+
+        if self.zupt_counter == 10 and self.reached_no_zupt_counter:
+            self.reached_no_zupt_counter = False
+            return k - 2
+
+        if self.no_zupt_counter == 50:
+            self.reached_no_zupt_counter = True
+
+        return None
 
 def smoothed_zupt_aided_ins(
         inertial: InertialData,
@@ -79,34 +104,32 @@ def smoothed_zupt_aided_ins(
     cov[:, 0]      = np.diag(P[:, :, 0])
 
     # Initialise navigation state
-    x[:, 0], quat[:, 0] = initialize_nav_eq(u, simdata.init_heading, simdata.init_pos_array)
+    x[:, 0], quat[:, 0] = initialize_nav(u, simdata.init_heading, simdata.init_pos_array)
 
     # Segment bookkeeping
     seg_start = 1
     seg_end   = N - 1
-    seg       = [0]
+    step_detector = StepDetector()
+    step_seg = []
 
     while True:
 
         # ------------------------------------------------------------------ #
         # Forward Kalman filter
         # ------------------------------------------------------------------ #
-        c = 0
+
         for n in range(seg_start, seg_end + 1):
 
             # Time update -------------------------------------------------- #
             x[:, n], quat[:, n] = navigation_equations(
-                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g)
-            # print(f"{x[:,n] = }")
-            # print(f"{quat[:,n] = }")
+                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g
+            )
+            
             F[:, :, n], G = state_matrix(quat[:, n], u[:, n], Ts)
 
             dx[:, n]     = F[:, :, n] @ dx[:, n - 1]
             P[:, :, n]   = F[:, :, n] @ P[:, :, n - 1] @ F[:, :, n].T + G @ Q @ G.T
             
-            # print(f"{dx[:,n] = }")
-            # print(f"{P[:,:,n] = }")
-
             dx_timeupd[:, n]   = dx[:, n]
             P_timeupd[:, :, n] = P[:, :, n]
 
@@ -120,15 +143,13 @@ def smoothed_zupt_aided_ins(
             P[:, :, n] = (P[:, :, n] + P[:, :, n].T) / 2
             cov[:, n]  = np.diag(P[:, :, n])
 
-            # Segmentation decision ---------------------------------------- #
-            if c > 0:
-                c += 1
-            if (np.sum(cov[3:6, n - 1]) > simdata.segmentation_thrsld and
-                    np.sum(cov[3:6, n]) < simdata.segmentation_thrsld and c == 0):
-                c = 1
-            if c == 30:
+            # # Segmentation decision ---------------------------------------- #
+            detected = step_detector(n, zupt[n])
+            if detected is not None:
+                step_seg.append(detected)
                 seg_end = n
                 break
+            
 
         # ------------------------------------------------------------------ #
         # RTS smoothing
@@ -167,17 +188,15 @@ def smoothed_zupt_aided_ins(
         P[0:2, 8, seg_end]    = 0.0
         P[8, 0:2, seg_end]    = 0.0
 
-        seg.append(seg_end)
-
         if seg_end != N - 1:
             seg_start = seg_end + 1
             seg_end   = N - 1
         else:
             break
 
-    return zupt, zupt_ins_trajectory, seg
+    return zupt, zupt_ins_trajectory, step_seg
 
-def initialize_nav_eq(u:NDArray, init_heading: float, init_pos: NDArray)->Tuple[NDArray,NDArray]:
+def initialize_nav(u:NDArray, init_heading: float, init_pos: NDArray)->Tuple[NDArray,NDArray]:
     """
     Calculate the initial state of the navigation equations.
 
@@ -372,6 +391,88 @@ def state_matrix(q: NDArray, u: NDArray, Ts: float)-> Tuple[NDArray, NDArray]:
     G = Ts * Gc
 
     return F, G
+
+def state_matrix_closed_form(q: NDArray, u: NDArray, Ts: float)-> Tuple[NDArray, NDArray]:
+    """
+    Calculate the state transition matrix F and the process noise gain matrix G.
+
+    Parameters
+    ----------
+    q : ndarray, shape (4,)
+        Quaternion representing current orientation [q0, q1, q2, q3].
+    u : ndarray, shape (6,)
+        IMU data: first 3 elements are specific force, last 3 are angular rates.
+    Ts : float
+        Sampling time (seconds).
+
+    Returns
+    -------
+    F : ndarray, shape (9, 9)
+        Discrete-time state transition matrix.
+    G : ndarray, shape (9, 6)
+        Discrete-time process noise gain matrix.
+    """
+
+    # Convert quaternion to rotation matrix (body-to-navigation)
+    R_nb = orientation.q2dcm(q)
+
+    # Compute skew symmetric matrix of body frame measured accel
+    a_skew = np.array([
+        [ 0.0,    -u[2],  u[1]],
+        [ u[2],  0.0,    -u[0]],
+        [-u[1],  u[0],  0.0   ]
+    ])
+
+    # Compute skew symmetrix matrix of body frame angular rate
+    w_skew = np.array([
+        [ 0.0,    -u[5],  u[4]],
+        [ u[5],  0.0,    -u[3]],
+        [-u[4],  u[3],  0.0   ]
+    ])
+
+    # Compute norm of angular rate
+    w_norm = linalg.norm(u[3:6])
+
+    # Compute rotation matrix from angular rate
+    R_delta = linalg.expm(Ts * w_skew)
+
+    # Identity matrix for convenience
+    I = np.eye(3)
+    O = np.zeros((3, 3))
+
+    phi_pv = I*Ts
+    phi_oo = R_delta.T
+
+    if w_norm > 1e-9 :
+        
+        # compute sum term    
+        sum = -np.sum(np.array([
+            np.linalg.matrix_power(-w_skew * Ts, int(ki)) / factorial(int(ki))
+            for ki in range(3)
+        ]))
+
+        phi_po = -R_nb @ a_skew @ (I*Ts**2/2 - (R_delta.T - sum)/w_norm**2)
+        phi_vo = -R_nb @ a_skew @ (I*Ts + (w_skew/w_norm**2)@(R_delta.T - I + w_skew*Ts))
+    else :
+        phi_po = -R_nb @ a_skew * Ts**2/2
+        phi_vo = -R_nb @ a_skew * Ts
+
+    # Discrete time dynamics
+    Fx = np.block([
+        [I, phi_pv, phi_po],
+        [O, I, phi_vo],
+        [O, O, phi_oo]
+    ])
+
+
+    # Discrete time control matrix
+    Fu = Ts * np.block([
+        [O,     O    ],
+        [-R_nb,  O    ],
+        [O,     -I]
+    ])
+
+    return Fx, Fu
 
 
 def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tuple[NDArray,NDArray]:

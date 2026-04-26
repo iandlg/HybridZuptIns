@@ -82,7 +82,7 @@ def plot_position_rmse(
 
     fig, ax = plt.subplots()
 
-    for i, traj in enumerate(trajs):
+    for i, traj in enumerate(trajs): 
         n = min(traj.pos.shape[1], gt_traj.pos.shape[1])
         rmse = np.sqrt(
             np.cumsum(np.sum((traj.pos[:2, :n] - gt_traj.pos[:2, :n]) ** 2, axis=0))
