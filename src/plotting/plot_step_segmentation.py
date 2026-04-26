@@ -148,7 +148,6 @@ def plot_step_vector_components(
 
     axs[0].legend()
     fig.tight_layout()
-    plt.show()
 
 
 if __name__ == "__main__":
@@ -173,15 +172,23 @@ if __name__ == "__main__":
     ins_traj_aligned = transform_position(ins_traj, gt_traj_aligned, zupt)
     ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3))
 
-    # Compute local step vectors for ground truth and inertial trajectory
-    steps_ins = ins_traj_aligned.step_vectors(segs)
-    steps_gt = gt_traj_aligned.step_vectors(segs)
-
     # Plot 
     plot_inertialdata_and_stepsegm(inertial_trunc, segs)
     plot_step_lengths(ins_traj_aligned, gt_traj_aligned, segs)
-    plot_step_vectors(steps_ins, steps_gt)
 
-    ##### needs different navigation frame
-    plot_step_vector_components(steps_ins, steps_gt, ins_traj_aligned.t[segs[:-1]])
+
+    # Plot steps in body frame 
+    steps_ins_b = ins_traj_aligned.step_vectors_body(segs)
+    steps_gt_b = gt_traj_aligned.step_vectors_body(segs)
+
+    plot_step_vectors(steps_ins_b, steps_gt_b)
+    plot_step_vector_components(steps_ins_b, steps_gt_b, ins_traj_aligned.t[segs[:-1]])
+
+
+    # Plot steps in heading frame 
+    steps_ins_h = ins_traj_aligned.step_vectors_heading(segs)
+    steps_gt_h = gt_traj_aligned.step_vectors_heading(segs)
+
+    plot_step_vectors(steps_ins_h, steps_gt_h)
+    plot_step_vector_components(steps_ins_h, steps_gt_h, ins_traj_aligned.t[segs[:-1]])
     plt.show()

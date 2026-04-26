@@ -234,7 +234,7 @@ def initialize_nav(u:NDArray, init_heading: float, init_pos: NDArray)->Tuple[NDA
     attitude = np.array([roll, pitch, init_heading])
 
     # Compute initial quaternion from attitude
-    R_bn = orientation.Rn2b(attitude).T
+    R_bn = orientation.euler_to_matrix(attitude)
     quat = orientation.dcm2q(R_bn)
 
     # Assemble initial state vector

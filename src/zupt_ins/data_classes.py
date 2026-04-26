@@ -200,7 +200,7 @@ class Trajectory(TimeSeries):
 
         return Trajectory(t=inertial_t, pos=pos, R_nb=R)
 
-    def step_vectors(self, step_seg: List[int]) -> NDArray[np.floating]:
+    def step_vectors_body(self, step_seg: List[int]) -> NDArray[np.floating]:
         """
         Compute body-frame step vectors from step segmentation indices.
 
@@ -222,6 +222,43 @@ class Trajectory(TimeSeries):
 
         displacements = pos_end - pos_start                         # (3, N_steps)
         steps = np.einsum('ijk,jk->ik', R_start.transpose(1, 0, 2), displacements)
+
+        return steps
+
+    def step_vectors_heading(self, step_seg: List[int]) -> NDArray[np.floating]:
+        """
+        Compute heading-frame step vectors from step segmentation indices.
+
+        For each consecutive pair of step segment indices (k-1, k), the step
+        vector is the displacement in the heading frame at step k-1:
+            step[:, k-1] = R_nb[:, :, seg[k-1]].T @ (pos[:, seg[k]] - pos[:, seg[k-1]])
+
+        Args:
+            step_seg: List of N_steps+1 indices marking step boundaries.
+
+        Returns:
+            steps: (3, N_steps) array of heading-frame step vectors.
+        """
+        seg = np.asarray(step_seg)
+
+        N_steps = seg[:-1].shape[0]
+
+        pos_start = self.pos[:, seg[:-1]]   # (3, N_steps)
+        pos_end   = self.pos[:, seg[1:]]    # (3, N_steps)
+        R_start_nb   = self.R_nb[:, :, seg[:-1]]  # (3, 3, N_steps)
+
+        # Compute euler angles
+        euler_nb = Rotation.from_matrix(R_start_nb.transpose(2,0,1)).as_euler('xyz') # (N_steps,3)
+        euler_nh = np.zeros((N_steps,1))
+        euler_nh = euler_nb[:,2:3]
+
+        # Compute new rotation matrices
+        R_hn = Rotation.from_euler('z', euler_nh).as_matrix().transpose(2,1,0) # (N_steps,3,3)
+        R_hn = np.asarray(R_hn)
+        print(f"{R_hn.shape = }")
+
+        displacements = pos_end - pos_start                         # (3, N_steps)
+        steps = np.einsum('ijk,jk->ik', R_hn, displacements)
 
         return steps
 
