@@ -70,13 +70,47 @@ class TimeSeries :
         
         return tuple(truncated)
     
+    @staticmethod
+    def is_compatible(*time_series: 'TimeSeries') -> bool :
+        if len(time_series) < 2:
+            raise ValueError("At least two TimeSeries must be provided")
+        
+        
+        base = time_series[0]
+        for time_serie in time_series[1:] :
+            if time_serie.t.shape != base.t.shape :
+                return False
+            if (np.max(np.abs(base.t - time_serie.t)) > 1e-9) :
+                return False
+        
+        return True
+
+    
 
 @dataclass(frozen=True)
 class Trajectory(TimeSeries):
+    """
+    Arguments
+    ---------
+    t : NDArray[np.floating], shape (N,)
+    pos : NDArray[np.floating], shape (3,N)
+    R_nb : NDArray[np.floating], shape (3,3,N)
+    vel : Optional[np.floating], shape (3,N)
+    """
     pos: NDArray[np.floating]      # (3, N)   position in metres
     R_nb: NDArray[np.floating]        # (3, 3, N) rotation matrices
     vel: Optional[NDArray[np.floating]] = None  # (3,N) velocity in m/s
 
+    @property
+    def euler_nb(self) -> NDArray[np.floating]:
+        """Euler angle representation of orientations, shape (3,N)"""
+        return np.asarray(Rotation.from_matrix(self.R_nb.transpose(2,0,1)).as_euler('xyz')).transpose(1,0)
+    
+    @property
+    def quat_nb(self) -> NDArray[np.floating]:
+        """Quaternion representation of orientations, shape (4,N)"""
+        return np.asarray(Rotation.from_matrix(self.R_nb.transpose(2,0,1)).as_quat(scalar_first=True)).transpose(1,0)
+    
     def __post_init__(self):
         super().__post_init__()
         N = len(self.t)
@@ -255,7 +289,6 @@ class Trajectory(TimeSeries):
         # Compute new rotation matrices
         R_hn = Rotation.from_euler('z', euler_nh).as_matrix().transpose(2,1,0) # (N_steps,3,3)
         R_hn = np.asarray(R_hn)
-        print(f"{R_hn.shape = }")
 
         displacements = pos_end - pos_start                         # (3, N_steps)
         steps = np.einsum('ijk,jk->ik', R_hn, displacements)

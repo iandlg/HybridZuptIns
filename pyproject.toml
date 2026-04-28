@@ -7,11 +7,13 @@ requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.10.8",
     "nbstripout>=0.9.1",
+    "numba>=0.65.1",
     "numpy>=2.4.4",
     "polar>=0.0.127",
     "polars>=1.39.3",
     "pytest>=9.0.3",
     "rootutils>=1.0.7",
+    "scikit-learn>=1.8.0",
 ]
 
 [tool.pytest.ini_options]

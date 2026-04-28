@@ -67,34 +67,40 @@ def plot_step_vectors(
     """
     inds_plot = np.where(steps_gt[0, :] > -1.5)[0]
 
-    fig, ax = plt.subplots()
+    fig, axs = plt.subplots(nrows=1, ncols=2)
 
     # Connecting lines between matched steps.
     for k in inds_plot:
-        ax.plot(
+        axs[0].plot(
             [steps_ins[0, k], steps_gt[0, k]],
             [steps_ins[1, k], steps_gt[1, k]],
             'k-', linewidth=0.8,
         )
 
     # Ground truth and inertial step markers.
-    p1 = ax.scatter(steps_gt[0, inds_plot],  steps_gt[1, inds_plot],
+    p1 = axs[0].scatter(steps_gt[0, inds_plot],  steps_gt[1, inds_plot],
                     color='black',   marker='x', linewidths=2,   s=40, label='Ground truth')
-    p2 = ax.scatter(steps_ins[0, inds_plot], steps_ins[1, inds_plot],
+    p2 = axs[0].scatter(steps_ins[0, inds_plot], steps_ins[1, inds_plot],
                     color='magenta', marker='s', linewidths=1.5, s=40, label='Inertial odometry')
 
     # Axis cross.
     axis_range = np.arange(-2, 2.01, 0.01)
-    ax.plot(axis_range, np.zeros_like(axis_range), 'k--', linewidth=0.8)
-    ax.plot(np.zeros_like(axis_range), axis_range, 'k--', linewidth=0.8)
+    axs[0].plot(axis_range, np.zeros_like(axis_range), 'k--', linewidth=0.8)
+    axs[0].plot(np.zeros_like(axis_range), axis_range, 'k--', linewidth=0.8)
 
-    ax.set_xlim(-1.5, 2.0)
-    ax.set_ylim(-1.5, 1.25)
-    ax.set_xlabel('Position (m)')
-    ax.set_ylabel('Position (m)')
-    ax.set_aspect('equal')
-    ax.grid(visible=True)
-    ax.legend(handles=[p1, p2])
+    axs[0].set_xlim(-1.5, 2.0)
+    axs[0].set_ylim(-1.5, 1.25)
+    axs[0].set_xlabel('Backward/Forward (m)')
+    axs[0].set_ylabel('Position (m)')
+    axs[0].set_aspect('equal')
+    axs[0].grid(visible=True)
+    axs[0].legend(handles=[p1, p2])
+
+
+    axs[1].scatter(
+        steps_gt[0,:] - steps_ins[0,:],
+        steps_gt[1,:] - steps_ins[1,:],
+    )
 
     plt.tight_layout()
 
@@ -159,7 +165,7 @@ if __name__ == "__main__":
     # Load data
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     gt_traj = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    simdata = INSConfig(segmentation_thrsld=0.03)
+    simdata = INSConfig()
 
     # Data preprocessing to fit gt to imu data
     inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)

@@ -6,6 +6,7 @@ from numpy.typing import NDArray
 from typing import Tuple, List, Optional
 import scipy.linalg as  linalg
 from math import factorial
+from numba import jit
 
 from src.zupt_ins import orientation
 from src.zupt_ins import detector
@@ -473,7 +474,6 @@ def state_matrix_closed_form(q: NDArray, u: NDArray, Ts: float)-> Tuple[NDArray,
     ])
 
     return Fx, Fu
-
 
 def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tuple[NDArray,NDArray]:
     """
