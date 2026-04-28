@@ -25,16 +25,47 @@ def compute_training_io(
         NDArray[np.floating],
         NDArray[np.floating]
     ]:
+    """
+    Compute training inputs and outputs for GP regression from a pair of trajectories.
 
+    Computes the yaw difference and position correction between the inertial
+    trajectory and ground truth at each step segment, expressed in the specified
+    local reference frame.
+
+    Parameters
+    -------
+    traj : Trajectory
+        Inertial trajectory, temporally aligned with traj_gt.
+    traj_gt : Trajectory
+        Ground truth trajectory, temporally aligned with traj.
+    step_seg : List[int]
+        Indices marking step boundaries in the trajectory.
+    ref_frame : LocalFrame, optional
+        Reference frame for step vector computation. Default is LocalFrame.BODY.
+
+    Returns
+    -------
+    output_yawdiff : NDArray[np.floating], shape (n_steps - 1,)
+        Per-step yaw difference between ground truth and inertial trajectory.
+    output_pos : NDArray[np.floating], shape (3, n_steps - 1)
+        Per-step position correction (ground truth minus inertial) in ref_frame.
+    input_feature : NDArray[np.floating], shape (3, n_steps - 1)
+        Inertial step vectors in ref_frame, used as regression inputs.
+
+    Raises
+    ------
+    ValueError
+        If traj and traj_gt are not temporally compatible.
+    """
     # Check if time series are overlapping and sampled at the same time 
     if not TimeSeries.is_compatible(traj, traj_gt) :
         raise ValueError(f"TimeSeries must be compatible.")
 
-    inertial_euler = traj.euler_nb.T[step_seg,:] # (N,3)
-    gt_euler = traj_gt.euler_nb.T[step_seg,:]    # (N,3)
+    inertial_euler = traj.euler_nb.T[step_seg,:] # (n_steps,3)
+    gt_euler = traj_gt.euler_nb.T[step_seg,:]    # (n_steps,3)
 
     # Compute yaw training output
-    output_yawdiff = np.diff(       # (N,)
+    output_yawdiff = np.diff(       # (n_steps - 1,)
         np.unwrap(
             gt_euler[:,2]
         )
@@ -56,17 +87,30 @@ def compute_training_io(
     output_pos = gt_steps - input_feature
 
     print(f"{input_feature.shape = }")
+    print(f"{output_yawdiff.shape = }")
+    print(f"{output_pos.shape = }")
     return output_yawdiff, output_pos, input_feature
 
 def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
     """
-    x : (n_features, n_samples)
-    y : (1, n_samples)
+    Estimate output corrections using leave-one-fold-out Gaussian Process regression.
+
+    Performs 10-fold cross-validation, fitting a GP with an RBF + white noise
+    kernel on each fold. Also computes a static (mean) correction as a baseline.
+
+    Parameters
+    -------
+    x : NDArray[np.floating], shape (n_features, n_samples)
+        Input features, one column per sample.
+    y : NDArray[np.floating], shape (n_samples,)
+        Scalar target values to regress.
 
     Returns
     -------
-    y_testing_GP     : (n_samples,)
-    y_testing_static : (n_samples,)
+    y_testing_GP : NDArray[np.floating], shape (n_samples,)
+        GP-predicted corrections assembled across all folds.
+    y_testing_static : NDArray[np.floating], shape (n_samples,)
+        Static correction, equal to the global mean of y for all samples.
     """
     n_samples = x.shape[1]
     y_testing_GP = np.zeros(n_samples)
@@ -105,22 +149,38 @@ def apply_corrections(
     ref_frame: LocalFrame = LocalFrame.BODY
 ) -> Trajectory:
     """
+    Apply yaw and position corrections to produce a corrected step-wise trajectory.
+
+    Integrates the corrected yaw increments to obtain a new heading sequence,
+    then re-integrates step vectors in the specified reference frame to produce
+    corrected positions. The output trajectory is defined only at step segment
+    indices.
+
     Parameters
     -------
-    traj : Trajectory,
-        Complete trajectory to correct
-    yawidff_correction : NDArray[np.floating], shape (n_steps,)
-        Regressed yaw correction
-    pos_correction : NDArray[np.floating], shape (n_steps, 3)
-        Regressed x,y,z corrections
+    traj : Trajectory
+        Complete inertial trajectory to correct.
+    yawdiff_correction : NDArray[np.floating], shape (n_steps - 1,)
+        Regressed per-step yaw correction (radians).
+    pos_correction : NDArray[np.floating], shape (3, n_steps - 1)
+        Regressed per-step x, y, z position corrections (metres).
     segs : List[int]
+        Indices marking step boundaries in traj.
+    ref_frame : LocalFrame, optional
+        Reference frame used for step vector computation. Default is LocalFrame.BODY.
+
+    Returns
+    -------
+    Trajectory
+        Corrected trajectory sampled at the step segment indices, with updated
+        positions and orientations.
     """
     
     euler = traj.euler_nb[:, segs]  # (3, n_steps) or n_steps-1 ???????
 
     # --- compute corrected yaws ---------------------------------------------
     diff_yaw = np.diff(euler[2, :]) + yawdiff_correction
-    new_yaws = np.cumsum(np.concatenate([[euler[0, 2]], diff_yaw]))
+    new_yaws = np.cumsum(np.concatenate([[euler[2, 0]], diff_yaw]))
     new_yaws = (new_yaws + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
 
     new_euler = euler.copy()
@@ -184,13 +244,14 @@ if __name__ == "__main__" :
         y_pos_GP[d, :], y_pos_static[d, :] = compute_corrections(input_feature, output_pos[d, :])
 
     GP_step_traj = apply_corrections(ins_traj, y_yaw_GP, y_pos_GP, segs, ref_frame=LocalFrame.BODY)
+    static_step_traj = apply_corrections(ins_traj, y_yaw_static, y_pos_static, segs, ref_frame=LocalFrame.BODY)
     GT_step_traj = gt_traj_aligned[segs]
     ins_step_traj = ins_traj_aligned[segs]
 
     import src.plotting.plot_trajectories as plot
     import matplotlib.pyplot as plt
 
-    plot.plot_groundtruth_vs_inertial_positions([ins_step_traj, GP_step_traj], GT_step_traj)
+    plot.plot_groundtruth_vs_inertial_positions([ins_step_traj, GP_step_traj, static_step_traj], GT_step_traj)
     plot.plot_groundtruth_vs_inertial_orientations(GP_step_traj, GT_step_traj)
-    plot.plot_position_rmse([ins_step_traj, GP_step_traj], GT_step_traj)
+    plot.plot_position_rmse([ins_step_traj, GP_step_traj,static_step_traj], GT_step_traj)
     plt.show()
