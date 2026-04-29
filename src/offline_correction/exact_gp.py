@@ -85,7 +85,7 @@ def compute_training_io(
     gt_steps = funs[ref_frame](traj_gt, step_seg)
 
     output_pos = gt_steps - input_feature
-
+    print(f"{len(step_seg) = }")
     print(f"{input_feature.shape = }")
     print(f"{output_yawdiff.shape = }")
     print(f"{output_pos.shape = }")
@@ -176,7 +176,7 @@ def apply_corrections(
         positions and orientations.
     """
     
-    euler = traj.euler_nb[:, segs]  # (3, n_steps) or n_steps-1 ???????
+    euler = traj.euler_nb[:, segs]  # (3, n_steps) uses Rotation.as_euler('xyz')
 
     # --- compute corrected yaws ---------------------------------------------
     diff_yaw = np.diff(euler[2, :]) + yawdiff_correction
@@ -220,6 +220,7 @@ if __name__ == "__main__" :
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     gt_traj = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     simdata = INSConfig()
+    FRAME = LocalFrame.BODY
 
     # Data preprocessing to fit gt to imu data
     inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
@@ -233,7 +234,8 @@ if __name__ == "__main__" :
     ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3))
 
     # Compute inputs and outputs for regression
-    output_yawdiff, output_pos, input_feature = compute_training_io(ins_traj_aligned, gt_traj_aligned, segs, ref_frame=LocalFrame.BODY)
+    output_yawdiff, output_pos, input_feature = compute_training_io(
+        ins_traj_aligned, gt_traj_aligned, segs, ref_frame=FRAME)
 
     # Regress test outputs
     y_yaw_GP, y_yaw_static = compute_corrections(input_feature, output_yawdiff)
@@ -243,8 +245,8 @@ if __name__ == "__main__" :
     for d in range(3):
         y_pos_GP[d, :], y_pos_static[d, :] = compute_corrections(input_feature, output_pos[d, :])
 
-    GP_step_traj = apply_corrections(ins_traj, y_yaw_GP, y_pos_GP, segs, ref_frame=LocalFrame.BODY)
-    static_step_traj = apply_corrections(ins_traj, y_yaw_static, y_pos_static, segs, ref_frame=LocalFrame.BODY)
+    GP_step_traj = apply_corrections(ins_traj, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
+    static_step_traj = apply_corrections(ins_traj, y_yaw_static, y_pos_static, segs, ref_frame=FRAME)
     GT_step_traj = gt_traj_aligned[segs]
     ins_step_traj = ins_traj_aligned[segs]
 
@@ -252,6 +254,6 @@ if __name__ == "__main__" :
     import matplotlib.pyplot as plt
 
     plot.plot_groundtruth_vs_inertial_positions([ins_step_traj, GP_step_traj, static_step_traj], GT_step_traj)
-    plot.plot_groundtruth_vs_inertial_orientations(ins_step_traj, GT_step_traj)
+    plot.plot_groundtruth_vs_inertial_orientations([ins_step_traj, GP_step_traj, static_step_traj], GT_step_traj)
     plot.plot_position_rmse([ins_step_traj, GP_step_traj,static_step_traj], GT_step_traj)
     plt.show()
