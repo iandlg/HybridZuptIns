@@ -116,7 +116,7 @@ def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
     y_testing_GP = np.zeros(n_samples)
     D = 10
 
-    kernel = RBF() + WhiteKernel()  # RBF signal + noise term
+    kernel = RBF()#  + WhiteKernel()  # RBF signal + noise term
 
     for i in range(1, D + 1):
         # --- indices --------------------------------------------------------
@@ -252,6 +252,6 @@ if __name__ == "__main__" :
     import matplotlib.pyplot as plt
 
     plot.plot_groundtruth_vs_inertial_positions([ins_step_traj, GP_step_traj, static_step_traj], GT_step_traj)
-    plot.plot_groundtruth_vs_inertial_orientations(GP_step_traj, GT_step_traj)
+    plot.plot_groundtruth_vs_inertial_orientations(ins_step_traj, GT_step_traj)
     plot.plot_position_rmse([ins_step_traj, GP_step_traj,static_step_traj], GT_step_traj)
     plt.show()

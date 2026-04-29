@@ -48,8 +48,10 @@ def plot_groundtruth_vs_inertial_orientations(
         ins_traj: Trajectory,
         gt_traj: Trajectory,
 ):
-    ins_euler = orientation.matrix_to_euler(ins_traj.R_nb)  # (3, N)
-    gt_euler = orientation.matrix_to_euler(gt_traj.R_nb)    # (3, N)
+    # ins_euler = orientation.matrix_to_euler(ins_traj.R_nb)  # (3, N)
+    # gt_euler = orientation.matrix_to_euler(gt_traj.R_nb)    # (3, N)
+    ins_euler = ins_traj.euler_nb
+    gt_euler = gt_traj.euler_nb
 
     labels = ['Roll', 'Pitch', 'Yaw']
     fig, axs = plt.subplots(1, 3, figsize=(12, 3))
