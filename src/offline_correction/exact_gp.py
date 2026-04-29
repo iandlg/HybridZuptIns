@@ -6,7 +6,8 @@ from numpy.typing import NDArray
 from typing import List, Tuple
 from enum import Enum
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
+from sklearn.preprocessing import StandardScaler
 
 import src.zupt_ins.orientation as orientation 
 from src.zupt_ins.data_classes import Trajectory, TimeSeries
@@ -62,19 +63,16 @@ def compute_training_io(
     if not TimeSeries.is_compatible(traj, traj_gt) :
         raise ValueError(f"TimeSeries must be compatible.")
 
-    inertial_euler = traj.euler_nb.T[step_seg,:] # (n_steps,3)
-    gt_euler = traj_gt.euler_nb.T[step_seg,:]    # (n_steps,3)
+    inertial_euler = traj.euler_nb[:, step_seg] # (3,n_steps)
+    gt_euler = traj_gt.euler_nb[:, step_seg]    # (3,n_steps)
 
     # Compute yaw training output
     output_yawdiff = np.diff(       # (n_steps - 1,)
-        np.unwrap(
-            gt_euler[:,2]
-        )
+        np.unwrap(gt_euler[2,:])
     ) - np.diff(
-        np.unwrap(
-            inertial_euler[:,2]
-        )
+        np.unwrap(inertial_euler[2,:])
     )
+    print(f"{output_yawdiff[-5:-1]}")
     
     # Compute Step vectors in specified reference frame
     funs = {
@@ -118,7 +116,17 @@ def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
     y_testing_GP = np.zeros(n_samples)
     D = 10
 
-    kernel = RBF()#  + WhiteKernel()  # RBF signal + noise term
+    # Scale inputs to unit variance — critical for RBF length scale to be meaningful
+    scaler = StandardScaler()
+    x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
+
+    kernel = (
+        ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
+        * RBF(length_scale=1.1, length_scale_bounds=(1e-2, 1e2))
+        + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
+    )
+    print(f"Theta before training {np.exp(kernel.theta)}")
+    # exp(theta) = [sigma_f, lengthscale, sigma_n]
 
     for i in range(1, D + 1):
         # --- indices --------------------------------------------------------
@@ -129,18 +137,28 @@ def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
         testing_ind  = list(range(test_start, test_end))
 
         # --- data -----------------------------------------------------------
-        x_train = x[:, training_ind].T   # (n_train, n_features)
+        x_train = x_scaled[training_ind,:]   # (n_train, n_features)
         y_train = y[training_ind]        # (n_train, )
-        x_test  = x[:, testing_ind].T    # (n_test,  n_features)
+        x_test  = x_scaled[testing_ind, :]    # (n_test,  n_features)
 
         # --- fit + predict --------------------------------------------------
-        model = GaussianProcessRegressor(kernel=kernel, normalize_y=True, n_restarts_optimizer=3)
+        model = GaussianProcessRegressor(
+            kernel=kernel,
+            normalize_y=True,
+            n_restarts_optimizer=3,
+            alpha=0.0
+        )
         model.fit(x_train, y_train)
         y_testing_GP[testing_ind] = model.predict(x_test)
+        print(f"{model.log_marginal_likelihood_value_ = }")
+        print(f"{np.exp(model.kernel_.theta) = }")
+                
 
     # --- static correction --------------------------------------------------
     y_testing_static = np.full(n_samples, float(np.mean(y)))
-    print(f"{float(np.mean(y)) = }")
+    print(f"Static mean correction: {float(np.mean(y)):.6f}")
+    print(f"GP mean correction: {float(np.mean(y_testing_GP)):.6f}")
+    print(f"GP var correction: {float(np.var(y_testing_GP)):.6f}")
 
     return y_testing_GP, y_testing_static
 
@@ -218,6 +236,7 @@ if __name__ == "__main__" :
     from src.zupt_ins.zupt_ins import smoothed_zupt_aided_ins
     from src.zupt_ins.data_classes import InertialData
     from src.zupt_ins.trajectory_transform import transform_position, transform_orientation
+    import matplotlib.pyplot as plt
 
     # Load data
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
@@ -239,13 +258,21 @@ if __name__ == "__main__" :
     # Compute inputs and outputs for regression
     output_yawdiff, output_pos, input_feature = compute_training_io(
         ins_traj_aligned, gt_traj_aligned, segs, ref_frame=FRAME)
+    fig, axs = plt.subplots(2, 2)
+    axs = axs.flatten()
+
+    axs[0].plot(output_yawdiff)
+    for d in range(3):
+        axs[d + 1].plot(output_pos[d, :])
 
     # Regress test outputs
+    print(f"--- Computing dimension yaw corrections")
     y_yaw_GP, y_yaw_static = compute_corrections(input_feature, output_yawdiff)
 
     y_pos_GP = np.empty(output_pos.shape)
     y_pos_static = np.empty(output_pos.shape)
     for d in range(3):
+        print(f"--- Computing dimension {d} corrections")
         y_pos_GP[d, :], y_pos_static[d, :] = compute_corrections(input_feature, output_pos[d, :])
 
     GP_step_traj = apply_corrections(ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
@@ -258,11 +285,13 @@ if __name__ == "__main__" :
 
     trajs = {
         "model" : ins_step_traj,
+        "model + static" : static_step_traj,
         "model + GP" : GP_step_traj,
-        "model + static" : static_step_traj
     }
 
-    plot.plot_groundtruth_vs_inertial_positions(trajs, GT_step_traj)
+    plot.plot_groundtruth_vs_inertial_positions(trajs, GT_step_traj[:20])
     plot.plot_groundtruth_vs_inertial_orientations(trajs, GT_step_traj)
     plot.plot_position_rmse(trajs, GT_step_traj)
+    plot.plot_total_position_rmse(trajs, GT_step_traj)
+    plot.plot_position_distance_error(trajs, GT_step_traj)
     plt.show()

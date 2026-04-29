@@ -14,21 +14,24 @@ def plot_groundtruth_vs_inertial_positions(
 ):
     fig, ax = plt.subplots()
 
-    ax.plot(gt_traj.pos[0, :-1], gt_traj.pos[1, :-1],
-            color='black', linestyle='--', linewidth=1)
-    ax.scatter(*gt_traj.pos[:2, 0],  color='black', marker='o', s=30, zorder=5)
-    ax.scatter(*gt_traj.pos[:2, -2], color='black', marker='s', s=30, zorder=5)
-
     if isinstance(trajs, Trajectory):
         trajs = {"Estimation" : trajs}
     
+    n = min([len(traj) for traj in trajs.values()])
+    n = min(n, len(gt_traj))
+
+    ax.plot(gt_traj.pos[0, :n], gt_traj.pos[1, :n],
+            color='black', linestyle='--', linewidth=1)
+    ax.scatter(*gt_traj.pos[:2, 0],  color='black', marker='o', s=30, zorder=5)
+    ax.scatter(*gt_traj.pos[:2, n-1], color='black', marker='s', s=30, zorder=5)
+
     ins_handles = []
     for i, (key, ins_traj) in enumerate(trajs.items()):
-        ins_line, = ax.plot(ins_traj.pos[0, :-1], ins_traj.pos[1, :-1],
+        ins_line, = ax.plot(ins_traj.pos[0, :n], ins_traj.pos[1, :n],
                             label=f'{key}')
         c = ins_line.get_color()
         ax.scatter(*ins_traj.pos[:2, 0],  color=c, marker='o', s=30, zorder=5)
-        ax.scatter(*ins_traj.pos[:2, -2], color=c, marker='s', s=30, zorder=5)
+        ax.scatter(*ins_traj.pos[:2, n-1], color=c, marker='s', s=30, zorder=5)
         ins_handles.append(Line2D([0], [0], color=c, label=ins_line.get_label()))
 
     ax.legend(handles=[
@@ -99,11 +102,57 @@ def plot_position_rmse(
 
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('RMSE (m)')
-    ax.set_title('Position RMSE')
+    ax.set_title('Position RMSE overtime')
     ax.legend()
     ax.grid(visible=True)
     
+def plot_total_position_rmse(
+        trajs: Union[Dict[str, Trajectory], Trajectory],
+        gt_traj: Trajectory,
+):
+    if isinstance(trajs, Trajectory):
+        trajs = {"Estimation": trajs}
 
+    labels, values = [], []
+
+    for key, traj in trajs.items():
+        n = min(traj.pos.shape[1], gt_traj.pos.shape[1])
+
+        # sqrt(mean(sum((pos_ins - pos_gt)^2, over xy)))
+        rmse = np.sqrt(np.mean(
+            np.sum((traj.pos[:2, :n] - gt_traj.pos[:2, :n]) ** 2, axis=0)
+        ))
+
+        labels.append(key)
+        values.append(rmse)
+        print(f"RMSE [{key}]: {rmse:.4f} m")
+
+    fig, ax = plt.subplots()
+    ax.bar(labels, values)
+    ax.set_ylabel('RMSE (m)')
+    ax.set_title('Total Position RMSE')
+    ax.grid(visible=True, axis='y')
+
+def plot_position_distance_error(
+        trajs: Union[Dict[str, Trajectory], Trajectory],
+        gt_traj: Trajectory,
+):
+    if isinstance(trajs, Trajectory):
+        trajs = {"Estimation" : trajs}
+
+    fig, ax = plt.subplots()
+
+    for i, (key, traj) in enumerate(trajs.items()): 
+        n = min(traj.pos.shape[1], gt_traj.pos.shape[1])
+        distance = np.sqrt(np.sum((traj.pos[:2, :n] - gt_traj.pos[:2, :n]) ** 2, axis=0))
+        
+        ax.plot(traj.t[:n], distance, label=getattr(traj, 'name', f'{key}'))
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('RMSE (m)')
+    ax.set_title('Position RMSE')
+    ax.legend()
+    ax.grid(visible=True)
 
 if __name__ == "__main__":
     from src.zupt_ins.initialization import INSConfig
