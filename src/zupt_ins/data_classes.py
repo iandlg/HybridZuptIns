@@ -104,13 +104,8 @@ class Trajectory(TimeSeries):
     @property
     def euler_nb(self) -> NDArray[np.floating]:
         """Euler angle representation of orientations, shape (3,N)"""
-        return np.asarray(Rotation.from_matrix(self.R_nb.transpose(2,0,1)).as_euler('xyz')).transpose(1,0)
-    
-    @property
-    def quat_nb(self) -> NDArray[np.floating]:
-        """Quaternion representation of orientations, shape (4,N)"""
-        return np.asarray(Rotation.from_matrix(self.R_nb.transpose(2,0,1)).as_quat(scalar_first=True)).transpose(1,0)
-    
+        return orientation.matrix_to_euler(self.R_nb)
+        
     def __post_init__(self):
         super().__post_init__()
         N = len(self.t)
@@ -187,7 +182,7 @@ class Trajectory(TimeSeries):
         keep = np.setdiff1d(np.arange(len(self.t)), bad)
         return self[keep]
     
-    def temporal_alignment(self, inertial_t: NDArray) -> "Trajectory":
+    def temporal_alignment(self, inertial_t: NDArray[np.floating]) -> "Trajectory":
         """
         Aligns the instance trajectory to provided measurement timestamps via interpolation.
 
@@ -197,7 +192,7 @@ class Trajectory(TimeSeries):
 
         Parameters
         ----------
-        inertial_t : np.ndarray, shape (N,)
+        inertial_t : NDArray[np.floating], shape (N,)
             Timestamps of the inertial measurements in seconds.
 
         Returns
@@ -279,16 +274,14 @@ class Trajectory(TimeSeries):
 
         pos_start = self.pos[:, seg[:-1]]   # (3, N_steps)
         pos_end   = self.pos[:, seg[1:]]    # (3, N_steps)
-        R_start_nb   = self.R_nb[:, :, seg[:-1]]  # (3, 3, N_steps)
+        euler_nb   = self.euler_nb[:,seg[:-1]]  # (3, N_steps)
 
         # Compute euler angles
-        euler_nb = Rotation.from_matrix(R_start_nb.transpose(2,0,1)).as_euler('xyz') # (N_steps,3)
-        euler_nh = np.zeros((N_steps,1))
-        euler_nh = euler_nb[:,2:3]
+        euler_nh = np.zeros((3,N_steps))
+        euler_nh[2,:] = euler_nb[2,:]
 
         # Compute new rotation matrices
-        R_hn = Rotation.from_euler('z', euler_nh).as_matrix().transpose(2,1,0) # (N_steps,3,3)
-        R_hn = np.asarray(R_hn)
+        R_hn = orientation.euler_to_matrix(euler_nh).transpose(1,0,2)
 
         displacements = pos_end - pos_start                         # (3, N_steps)
         steps = np.einsum('ijk,jk->ik', R_hn, displacements)

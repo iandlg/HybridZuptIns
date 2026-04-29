@@ -3,13 +3,13 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import matplotlib.pyplot as plt
 from matplotlib.pylab import Line2D
-from typing import List, Union
+from typing import List, Union, Dict
 import numpy as np
 
 from src.zupt_ins.data_classes import Trajectory, InertialData
 
 def plot_groundtruth_vs_inertial_positions(
-        trajs: Union[List[Trajectory], Trajectory],
+        trajs: Union[Dict[str, Trajectory], Trajectory],
         gt_traj: Trajectory,
 ):
     fig, ax = plt.subplots()
@@ -20,12 +20,12 @@ def plot_groundtruth_vs_inertial_positions(
     ax.scatter(*gt_traj.pos[:2, -2], color='black', marker='s', s=30, zorder=5)
 
     if isinstance(trajs, Trajectory):
-        trajs = [trajs]
+        trajs = {"Estimation" : trajs}
     
     ins_handles = []
-    for i, ins_traj in enumerate(trajs):
+    for i, (key, ins_traj) in enumerate(trajs.items()):
         ins_line, = ax.plot(ins_traj.pos[0, :-1], ins_traj.pos[1, :-1],
-                            label=f'Inertial odometry {i + 1}')
+                            label=f'{key}')
         c = ins_line.get_color()
         ax.scatter(*ins_traj.pos[:2, 0],  color=c, marker='o', s=30, zorder=5)
         ax.scatter(*ins_traj.pos[:2, -2], color=c, marker='s', s=30, zorder=5)
@@ -42,26 +42,26 @@ def plot_groundtruth_vs_inertial_positions(
     ax.grid(visible=True)
 
 def plot_groundtruth_vs_inertial_orientations(
-        ins_trajs: Union[List[Trajectory], Trajectory],
+        trajs: Union[Dict[str,Trajectory], Trajectory],
         gt_traj: Trajectory,
 ):
-    if isinstance(ins_trajs, Trajectory):
-        ins_trajs = [ins_trajs]
+    if isinstance(trajs, Trajectory):
+        trajs = {"Estimation" : trajs}
 
     gt_euler = gt_traj.euler_nb  # (3, N)
     labels = ['Roll', 'Pitch', 'Yaw']
     fig, axs = plt.subplots(1, 3, figsize=(12, 3))
 
     ins_handles = []
-    for j, ins_traj in enumerate(ins_trajs):
+    for j, (key, ins_traj) in enumerate(trajs.items()):
         ins_euler = ins_traj.euler_nb  # (3, N)
         for i, (ax, label) in enumerate(zip(axs, labels)):
             ins_line, = ax.plot(ins_traj.t, np.rad2deg(ins_euler[i]),
-                                linewidth=0.8, label=f'Inertial odometry {j + 1}')
+                                linewidth=0.8, label=f'{key}')
             if i == 0:
                 ins_handles.append(
                     Line2D([0], [0], color=ins_line.get_color(),
-                           label=f'Inertial odometry {j + 1}')
+                           label=f'{key}')
                 )
 
     for i, (ax, label) in enumerate(zip(axs, labels)):
@@ -81,21 +81,21 @@ def plot_groundtruth_vs_inertial_orientations(
     
 
 def plot_position_rmse(
-        trajs: Union[List[Trajectory], Trajectory],
+        trajs: Union[Dict[str, Trajectory], Trajectory],
         gt_traj: Trajectory,
 ):
     if isinstance(trajs, Trajectory):
-        trajs = [trajs]
+        trajs = {"Estimation" : trajs}
 
     fig, ax = plt.subplots()
 
-    for i, traj in enumerate(trajs): 
+    for i, (key, traj) in enumerate(trajs.items()): 
         n = min(traj.pos.shape[1], gt_traj.pos.shape[1])
         rmse = np.sqrt(
             np.cumsum(np.sum((traj.pos[:2, :n] - gt_traj.pos[:2, :n]) ** 2, axis=0))
             / np.arange(1, n + 1)
         )
-        ax.plot(traj.t[:n], rmse, label=getattr(traj, 'name', f'Trajectory {i + 1}'))
+        ax.plot(traj.t[:n], rmse, label=getattr(traj, 'name', f'{key}'))
 
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('RMSE (m)')
