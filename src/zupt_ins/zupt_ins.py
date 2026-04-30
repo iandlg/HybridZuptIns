@@ -3,10 +3,9 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Any
 import scipy.linalg as  linalg
 from math import factorial
-from numba import jit
 
 from src.zupt_ins import orientation
 from src.zupt_ins import detector
@@ -38,7 +37,8 @@ class StepDetector:
 
 def smoothed_zupt_aided_ins(
         inertial: InertialData,
-        simdata: INSConfig
+        simdata: INSConfig,
+        online_corrector: Any = None
     ) -> Tuple[NDArray, Trajectory, List[int]]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.

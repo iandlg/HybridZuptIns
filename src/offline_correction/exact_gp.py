@@ -3,10 +3,10 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from enum import Enum
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel
+from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Kernel
 from sklearn.preprocessing import StandardScaler
 
 import src.zupt_ins.orientation as orientation 
@@ -85,13 +85,13 @@ def compute_training_io(
 
     output_pos = gt_steps - input_feature
 
-    print(f"{len(step_seg) = }")
-    print(f"{input_feature.shape = }")
-    print(f"{output_yawdiff.shape = }")
-    print(f"{output_pos.shape = }")
     return output_yawdiff, output_pos, input_feature
 
-def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
+def compute_corrections(
+        x: NDArray[np.floating],
+        y: NDArray[np.floating],
+        kernel: Optional[Kernel] = None
+    ) -> Tuple[NDArray, NDArray, NDArray]:
     """
     Estimate output corrections using leave-one-fold-out Gaussian Process regression.
 
@@ -114,17 +114,20 @@ def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
     """
     n_samples = x.shape[1]
     y_testing_GP = np.zeros(n_samples)
+    hyperparameters = np.zeros((10,4))
     D = 10
 
     # Scale inputs to unit variance — critical for RBF length scale to be meaningful
     scaler = StandardScaler()
     x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
 
-    kernel = (
-        ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-        * RBF(length_scale=1.1, length_scale_bounds=(1e-2, 1e2))
-        + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
-    )
+    if kernel is None :
+        kernel = (
+            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
+            * RBF(length_scale=1.1, length_scale_bounds=(1e-2, 1e2))
+            + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
+        )
+
     print(f"Theta before training {np.exp(kernel.theta)}")
     # exp(theta) = [sigma_f, lengthscale, sigma_n]
 
@@ -150,8 +153,11 @@ def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
         )
         model.fit(x_train, y_train)
         y_testing_GP[testing_ind] = model.predict(x_test)
-        print(f"{model.log_marginal_likelihood_value_ = }")
-        print(f"{np.exp(model.kernel_.theta) = }")
+        batch_hyperparams = np.array([
+            model.log_marginal_likelihood_value_, np.exp(model.kernel_.theta)[0],
+            np.exp(model.kernel_.theta)[1], np.exp(model.kernel_.theta)[2]
+        ])
+        hyperparameters[i-1] = batch_hyperparams
                 
 
     # --- static correction --------------------------------------------------
@@ -160,7 +166,7 @@ def compute_corrections(x: NDArray[np.floating], y: NDArray[np.floating]):
     print(f"GP mean correction: {float(np.mean(y_testing_GP)):.6f}")
     print(f"GP var correction: {float(np.var(y_testing_GP)):.6f}")
 
-    return y_testing_GP, y_testing_static
+    return y_testing_GP, y_testing_static, hyperparameters
 
 def apply_corrections(
     traj: Trajectory,
@@ -266,19 +272,41 @@ if __name__ == "__main__" :
         axs[d + 1].plot(output_pos[d, :])
 
     # Regress test outputs
-    print(f"--- Computing dimension yaw corrections")
-    y_yaw_GP, y_yaw_static = compute_corrections(input_feature, output_yawdiff)
+    hyperparams = {}
+
+    print(f"--- Computing dimension yaw corrections ---")
+    y_yaw_GP, y_yaw_static, hyperparams["yaw"]= compute_corrections(input_feature, output_yawdiff)
 
     y_pos_GP = np.empty(output_pos.shape)
     y_pos_static = np.empty(output_pos.shape)
     for d in range(3):
-        print(f"--- Computing dimension {d} corrections")
-        y_pos_GP[d, :], y_pos_static[d, :] = compute_corrections(input_feature, output_pos[d, :])
+        print(f"--- Computing dimension {d} corrections ---")
+        y_pos_GP[d, :], y_pos_static[d, :], hyperparams[f"pos_{d}"] = compute_corrections(input_feature, output_pos[d, :])
+
+    # Regress test outputs with step time feature added
+    print(f"--- Computing dimension yaw corrections ---")
+    delta_t = np.diff(np.array(segs))/100
+    augmen_feature = np.empty((4, len(segs)-1))
+    augmen_feature[0:3, :] = input_feature
+    augmen_feature[3, :] = delta_t
+    kernel = (
+        ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
+        * RBF(length_scale=1, length_scale_bounds=(1e-4, 1e2))
+        + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
+    )
+
+    y_yaw_GP_aug, _, hyperparams["yaw_dt"] = compute_corrections(augmen_feature, output_yawdiff, kernel)
+
+    y_pos_GP_aug = np.empty(output_pos.shape)
+    for d in range(3):
+        print(f"--- Computing dimension {d} corrections ---")
+        y_pos_GP_aug[d, :], _, hyperparams[f"pos_{d}_dt"] = compute_corrections(augmen_feature, output_pos[d, :],kernel)
 
     GP_step_traj = apply_corrections(ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
     static_step_traj = apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, ref_frame=FRAME)
     GT_step_traj = gt_traj_aligned[segs]
     ins_step_traj = ins_traj_aligned[segs]
+    GP_step_traj_aug = apply_corrections(ins_traj_aligned, y_yaw_GP_aug, y_pos_GP_aug, segs, ref_frame=FRAME)
 
     import src.plotting.plot_trajectories as plot
     import matplotlib.pyplot as plt
@@ -287,6 +315,7 @@ if __name__ == "__main__" :
         "model" : ins_step_traj,
         "model + static" : static_step_traj,
         "model + GP" : GP_step_traj,
+        "model + GP + dt" : GP_step_traj_aug
     }
 
     plot.plot_groundtruth_vs_inertial_positions(trajs, GT_step_traj[:20])
