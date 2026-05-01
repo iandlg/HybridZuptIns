@@ -558,6 +558,7 @@ def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tu
     return y, q
 
 
+
 if __name__ == "__main__":
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     simdata = INSConfig(segmentation_thrsld=0.03)

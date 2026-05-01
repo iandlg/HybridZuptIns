@@ -9,10 +9,16 @@ import polars as pl
 from numpy.typing import NDArray
 from typing import Union, List, Optional, Tuple
 from scipy.spatial.transform import Rotation, Slerp
+from enum import Enum
 
 from src.zupt_ins import orientation
 
 _MM_TO_M = 0.001
+
+class ReferenceFrame(Enum):
+    BOD = 1
+    HED = 2
+    NAV = 3
 
 @dataclass(frozen=True)
 class TimeSeries :

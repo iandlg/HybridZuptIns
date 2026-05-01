@@ -10,12 +10,9 @@ from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, K
 from sklearn.preprocessing import StandardScaler
 
 import src.zupt_ins.orientation as orientation 
-from src.zupt_ins.data_classes import Trajectory, TimeSeries
+from src.zupt_ins.data_classes import Trajectory, TimeSeries, ReferenceFrame
 
-class ReferenceFrame(Enum):
-    BOD = 1
-    HED = 2
-    NAV = 3
+
 
 def compute_training_io(
         traj: Trajectory,
@@ -72,7 +69,6 @@ def compute_training_io(
     ) - np.diff(
         np.unwrap(inertial_euler[2,:])
     )
-    print(f"{output_yawdiff[-5:-1]}")
     
     # Compute Step vectors in specified reference frame
     funs = {
@@ -90,7 +86,20 @@ def compute_training_io(
 def compute_corrections(
         x: NDArray[np.floating],
         y: NDArray[np.floating],
-        kernel: Optional[Kernel] = None
+        kernel: Kernel = (
+            ConstantKernel(
+                constant_value=1.0,
+                constant_value_bounds=(1e-3, 1e2)
+            ) * RBF(
+                length_scale=1.1,
+                length_scale_bounds=(1e-3, 1e2)
+            )
+            + WhiteKernel(
+                noise_level=1e-3,
+                noise_level_bounds=(1e-9, 1e-1)
+            )
+        ),
+        n_restarts_optimizer: int = 10
     ) -> Tuple[NDArray, NDArray, NDArray]:
     """
     Estimate output corrections using leave-one-fold-out Gaussian Process regression.
@@ -121,15 +130,8 @@ def compute_corrections(
     scaler = StandardScaler()
     x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
 
-    if kernel is None :
-        kernel = (
-            ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-            * RBF(length_scale=1.1, length_scale_bounds=(1e-2, 1e2))
-            + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
-        )
-
     print(f"Theta before training {np.exp(kernel.theta)}")
-    # exp(theta) = [sigma_f, lengthscale, sigma_n]
+    # exp(theta) = [sigma_f**2, lengthscale, sigma_n**2]
 
     for i in range(1, D + 1):
         # --- indices --------------------------------------------------------
@@ -148,14 +150,16 @@ def compute_corrections(
         model = GaussianProcessRegressor(
             kernel=kernel,
             normalize_y=True,
-            n_restarts_optimizer=3,
+            n_restarts_optimizer=n_restarts_optimizer,
             alpha=0.0
         )
         model.fit(x_train, y_train)
         y_testing_GP[testing_ind] = model.predict(x_test)
         batch_hyperparams = np.array([
-            model.log_marginal_likelihood_value_, np.exp(model.kernel_.theta)[0],
-            np.exp(model.kernel_.theta)[1], np.exp(model.kernel_.theta)[2]
+            model.log_marginal_likelihood_value_,
+            np.exp(model.kernel_.theta[0]/2),    # sigma_f
+            np.exp(model.kernel_.theta[1]),             # length scale
+            np.exp(model.kernel_.theta[2]/2)              # sigma_n 
         ])
         hyperparameters[i-1] = batch_hyperparams
                 
@@ -237,33 +241,43 @@ def apply_corrections(
         R_nb = new_R,  # carry corrected R if available, else original
     )
 
+def set_fixed_kernel(hyperparameters: NDArray) -> Kernel :
+    return (
+            ConstantKernel(
+                constant_value=hyperparameters[0]**2,
+                constant_value_bounds="fixed"
+            ) * RBF(
+                length_scale=hyperparameters[1],
+                length_scale_bounds="fixed"
+            )
+            + WhiteKernel(
+                noise_level=hyperparameters[2]**2,
+                noise_level_bounds="fixed"
+            )
+        )
+
+
+
+
 if __name__ == "__main__" :
-    from src.zupt_ins.initialization import INSConfig
-    from src.zupt_ins.zupt_ins import smoothed_zupt_aided_ins
-    from src.zupt_ins.data_classes import InertialData
-    from src.zupt_ins.trajectory_transform import transform_position, transform_orientation
+    import src.zupt_ins.pipeline as pipeline
     import matplotlib.pyplot as plt
+    import polars as pl
+    import src.plotting.plot_trajectories as plot
 
-    # Load data
-    inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    gt_traj = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    simdata = INSConfig()
+    # Compute INS trajectory
+    ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
+        data_path=PROJECT_ROOT / "data/angermann_high_precision",
+        trial_id=15,
+    )
+
     FRAME = ReferenceFrame.BOD
-
-    # Data preprocessing to fit gt to imu data
-    inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
-    gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
-
-    # Compute trajectory from inertial data
-    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial_trunc, simdata)
-
-    # Rigidly transform the positions and orientations of the computed trajectory
-    ins_traj_aligned = transform_position(ins_traj, gt_traj_aligned, zupt)
-    ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3))
 
     # Compute inputs and outputs for regression
     output_yawdiff, output_pos, input_feature = compute_training_io(
         ins_traj_aligned, gt_traj_aligned, segs, ref_frame=FRAME)
+    
+    # Plot the training ouptut data
     fig, axs = plt.subplots(2, 2)
     axs = axs.flatten()
 
@@ -283,40 +297,46 @@ if __name__ == "__main__" :
         print(f"--- Computing dimension {d} corrections ---")
         y_pos_GP[d, :], y_pos_static[d, :], hyperparams[f"pos_{d}"] = compute_corrections(input_feature, output_pos[d, :])
 
-    # Regress test outputs with step time feature added
-    print(f"--- Computing dimension yaw corrections ---")
-    delta_t = np.diff(np.array(segs))/100
-    augmen_feature = np.empty((4, len(segs)-1))
-    augmen_feature[0:3, :] = input_feature
-    augmen_feature[3, :] = delta_t
-    kernel = (
-        ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
-        * RBF(length_scale=1, length_scale_bounds=(1e-4, 1e2))
-        + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
-    )
+    # # Regress test outputs with step time feature added
+    # print(f"--- Computing dimension yaw corrections ---")
+    # delta_t = np.diff(np.array(segs))/100
+    # augmen_feature = np.empty((4, len(segs)-1))
+    # augmen_feature[0:3, :] = input_feature
+    # augmen_feature[3, :] = delta_t
+    # kernel = (
+    #     ConstantKernel(constant_value=1.0, constant_value_bounds=(1e-3, 1e3))
+    #     * RBF(length_scale=np.ones(4), length_scale_bounds=(1e-4, 1e2))
+    #     + WhiteKernel(noise_level=1e-3, noise_level_bounds=(1e-9, 1e-1))
+    # )
 
-    y_yaw_GP_aug, _, hyperparams["yaw_dt"] = compute_corrections(augmen_feature, output_yawdiff, kernel)
+    # y_yaw_GP_aug, _, hyperparams["yaw_dt"] = compute_corrections(augmen_feature, output_yawdiff, kernel)
 
-    y_pos_GP_aug = np.empty(output_pos.shape)
-    for d in range(3):
-        print(f"--- Computing dimension {d} corrections ---")
-        y_pos_GP_aug[d, :], _, hyperparams[f"pos_{d}_dt"] = compute_corrections(augmen_feature, output_pos[d, :],kernel)
+    # y_pos_GP_aug = np.empty(output_pos.shape)
+    # for d in range(3):
+    #     print(f"--- Computing dimension {d} corrections ---")
+    #     y_pos_GP_aug[d, :], _, hyperparams[f"pos_{d}_dt"] = compute_corrections(augmen_feature, output_pos[d, :],kernel)
 
     GP_step_traj = apply_corrections(ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
     static_step_traj = apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, ref_frame=FRAME)
     GT_step_traj = gt_traj_aligned[segs]
     ins_step_traj = ins_traj_aligned[segs]
-    GP_step_traj_aug = apply_corrections(ins_traj_aligned, y_yaw_GP_aug, y_pos_GP_aug, segs, ref_frame=FRAME)
+    # GP_step_traj_aug = apply_corrections(ins_traj_aligned, y_yaw_GP_aug, y_pos_GP_aug, segs, ref_frame=FRAME)
 
-    import src.plotting.plot_trajectories as plot
-    import matplotlib.pyplot as plt
 
     trajs = {
         "model" : ins_step_traj,
         "model + static" : static_step_traj,
         "model + GP" : GP_step_traj,
-        "model + GP + dt" : GP_step_traj_aug
+        # "model + GP + dt" : GP_step_traj_aug
     }
+
+    for key, val in hyperparams.items():
+        df = pl.from_numpy(val, ["log_marginal_likelihood", "sigma_f","length_scale", "sigma_n"])
+        filename = PROJECT_ROOT / f"data/hyperparameters/python/hyperparams_{key}.csv"
+        if not filename.parent.exists():
+            filename.parent.mkdir(exist_ok=True)
+        df.write_csv(filename)
+
 
     plot.plot_groundtruth_vs_inertial_positions(trajs, GT_step_traj[:20])
     plot.plot_groundtruth_vs_inertial_orientations(trajs, GT_step_traj)
