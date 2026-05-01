@@ -14,3 +14,4 @@ wheels/
 # Project folders
 data/
 plots/
+out/

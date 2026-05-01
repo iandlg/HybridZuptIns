@@ -234,7 +234,15 @@ class Trajectory(TimeSeries):
         R = slerp(inertial_t).as_matrix().transpose(1, 2, 0)  # back to (3, 3, N)
 
         return Trajectory(t=inertial_t, pos=pos, R_nb=R)
-
+    
+    def rmse(self, gt_traj: 'Trajectory') -> float:
+        if self.is_compatible(self, gt_traj):
+            return np.sqrt(
+                np.mean(np.sum((self.pos[:2, :] - gt_traj.pos[:2, :]) ** 2, axis=0))
+            )
+        raise ValueError("Incompatible time series.")
+    
+    
     def step_vectors_body(self, step_seg: List[int]) -> NDArray[np.floating]:
         """
         Compute body-frame step vectors from step segmentation indices.
