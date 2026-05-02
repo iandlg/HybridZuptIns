@@ -5,42 +5,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing import List, Tuple, Optional, Sequence
 
-import src.zupt_ins.orientation as orientation 
-from src.zupt_ins.data_classes import Trajectory, TimeSeries
 from sklearn.preprocessing import StandardScaler
-
-class SquaredExponentialKernel:
-    def __init__(self, sigma_f: float = 1.0, len_scale: float = 1.0):
-        self.sigma_f = sigma_f
-        self.len_scale = len_scale
-
-    def __call__(self, A: NDArray, B: NDArray) -> NDArray:
-        A = np.asarray(A)  # (n_a, n_features)
-        B = np.asarray(B)  # (n_b, n_features)
-
-        # ||xa - xb||^2, shape (n_a, n_b)
-        sqdist = np.sum((A[:, None, :] - B[None, :, :]) ** 2, axis=-1)
-
-        return self.sigma_f**2 * np.exp(-sqdist / (2 * self.len_scale**2))
-
-    def spectral_density(self, s: NDArray, d: int) -> NDArray:
-        """
-        Spectral density of the SE kernel (eq. 3-30):
-            S_SE(s) = sigma_f^2 * (2*pi*l^2)^(d/2) * exp(-2*pi^2*l^2*s^2)
-
-        Parameters
-        ----------
-        s : NDArray
-            Frequencies at which to evaluate the spectral density.
-        d : int
-            Dimension of the input x.
-        """
-        s = np.asarray(s)
-        return (
-            self.sigma_f**2
-            * (2 * np.pi * self.len_scale**2) ** (d / 2)
-            * np.exp(-2 * np.pi**2 * self.len_scale**2 * s**2)
-        )
     
 def power_spectral_density(
         omega: NDArray,
@@ -75,6 +40,7 @@ def calc_eigenvalues(L: NDArray, m: Sequence[int]) -> NDArray:
     temp = [np.arange(1, 1 + m[d]) for d in range(len(m))]
     S = np.meshgrid(*temp)
     S_arr = np.vstack([s.flatten() for s in S]).T
+    print(S_arr)
     return np.square((np.pi * S_arr) / (2 * L))
 
 def calc_eigenvectors(Xs: NDArray, L: NDArray, eigvals: NDArray) -> NDArray:
@@ -166,15 +132,116 @@ def compute_hsgp_corrections(
         omega = np.sqrt(eigvals)  # (m_star, d)
         psd = power_spectral_density(omega, n_dim, ls, sigma_f) 
 
-        A = phi.T @ phi + sigma_n**2 * np.diag(1 / psd)
-        L_chol = np.linalg.cholesky(A)                          # (m_star, m_star)
-        alpha = np.linalg.solve(L_chol.T, np.linalg.solve(L_chol, phi.T @ y_train))
+        # A = phi.T @ phi + sigma_n**2 * np.diag(1 / psd)
+        # L_chol = np.linalg.cholesky(A)                          # (m_star, m_star)
+        # alpha = np.linalg.solve(L_chol.T, np.linalg.solve(L_chol, phi.T @ y_train))
 
-        y_testing_GP[testing_ind] = phi_star @ alpha                             # predictive mean
+        # y_testing_GP[testing_ind] = phi_star @ alpha    # predictive mean
+
+        Lambda = np.diag(psd)                                        # (m_star, m_star)
+        K_nm   = phi @ Lambda @ phi.T                                # (n_train, n_train)
+        A      = K_nm + sigma_n**2 * np.eye(len(y_train))           # (n_train, n_train)
+        alpha  = np.linalg.solve(A, y_train)                         # (n_train,)
+        y_testing_GP[testing_ind] = phi_star @ Lambda @ phi.T @ alpha                # (n_test,)
         # var = sigma_f**2 - np.sum(phi_star @ np.linalg.solve(L_chol, phi_star.T).T, axis=1)  # predictive variance                
 
     return y_testing_GP
 
 
 if __name__ == "__main__" : 
-    pass
+    import src.zupt_ins.pipeline as pipeline
+    import src.offline_correction.gp as gp
+    import src.offline_correction.batch_correction as batch_correction
+    from src.zupt_ins.data_classes import ReferenceFrame
+
+    # Compute INS trajectory
+    ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
+        data_path=PROJECT_ROOT / "data/angermann_high_precision",
+        trial_id=15,
+    )
+
+    FRAME = ReferenceFrame.BOD
+
+    # Compute inputs and outputs for regression
+    output_yawdiff, output_pos, input_feature = batch_correction.compute_training_io(
+        ins_traj_aligned, gt_traj_aligned, segs, ref_frame=FRAME)
+    
+    # Load hyperparameters from variability results
+    hyperparameters = gp.hyperparameters_from_csv(
+        PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
+    )
+    
+    # Apply static correction
+    y_yaw_static = batch_correction.compute_static_correctons(input_feature, output_yawdiff)
+    y_pos_static = np.empty(output_pos.shape)
+    for d in range(3):
+        y_pos_static[d, :] = batch_correction.compute_static_correctons(input_feature, output_pos[d, :])
+    static_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, FRAME)
+
+    # Apply exact GP correction
+    y_yaw_gp, _ = gp.compute_gp_corrections(
+        input_feature, output_yawdiff,
+        kernel=gp.set_fixed_kernel(
+            hyperparameters["yaw"][0,1:4]
+        ),
+        n_restarts_optimizer=0
+    )
+
+    y_pos_gp = np.empty(output_pos.shape)
+    for d in range(3):
+        y_pos_gp[d], _ = gp.compute_gp_corrections(
+            input_feature, output_pos[d],
+            kernel=gp.set_fixed_kernel(
+                hyperparameters[f"pos_{d}"][0,1:4]
+            ),
+            n_restarts_optimizer=0
+        )
+    gp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_gp, y_pos_gp, segs, FRAME)
+
+    # Apply HSGP correction
+    m = [50,50,20]
+    L = np.array([5,5,2])
+
+    mean_step_size = np.mean(np.linalg.norm(input_feature, axis=0))
+    max_distance = np.max(np.linalg.norm(input_feature, axis=0))
+
+    y_yaw_hsgp = compute_hsgp_corrections(
+        input_feature,
+        output_yawdiff,
+        m = m,
+        ls = hyperparameters["yaw"][0,2],
+        sigma_f= hyperparameters["yaw"][0,1],
+        sigma_n= hyperparameters["yaw"][0,3],
+        L=L
+    )
+
+    y_pos_hsgp = np.empty(output_pos.shape)
+    for d in range(3):
+        y_pos_hsgp[d, :] = compute_hsgp_corrections(
+            input_feature, output_pos[d, :],
+            m = m,
+            ls = hyperparameters[f"pos_{d}"][0,2],
+            sigma_f= hyperparameters[f"pos_{d}"][0,1],
+            sigma_n= hyperparameters[f"pos_{d}"][0,3],
+            L=L
+        )
+
+    hsgp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_hsgp, y_pos_hsgp, segs, ref_frame=FRAME)
+   
+    isn_step_traj = ins_traj_aligned[segs]
+    gt_step_traj = gt_traj_aligned[segs]
+    trajs = {
+        "model" : isn_step_traj,
+        "model + static" : static_step_traj,
+        "model + GP" : gp_step_traj,
+        "model + HSGP" : hsgp_step_traj
+        # "model + GP + dt" : GP_step_traj_aug
+    }
+    import src.plotting.plot_trajectories as plot
+    import matplotlib.pyplot as plt
+    plot.plot_groundtruth_vs_inertial_positions(trajs, gt_step_traj[:20])
+    plot.plot_groundtruth_vs_inertial_orientations(trajs, gt_step_traj)
+    plot.plot_position_rmse(trajs, gt_step_traj)
+    plot.plot_total_position_rmse(trajs, gt_step_traj)
+    plot.plot_position_distance_error(trajs, gt_step_traj)
+    plt.show()

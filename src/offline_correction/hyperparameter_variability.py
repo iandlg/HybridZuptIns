@@ -6,34 +6,17 @@ Add these two functions to src/offline_correction/exact_gp.py (or import them fr
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Kernel
+from pathlib import Path
+import polars as pl
 
-# ── imports that mirror the top of exact_gp.py ────────────────────────────────
-# (already present when this lives inside exact_gp.py)
-from src.offline_correction.exact_gp import (
-    compute_training_io,
-    compute_gp_corrections,
-    apply_corrections,
-)
+import src.offline_correction.batch_correction as correction
+import src.offline_correction.gp as gp
 from src.zupt_ins.data_classes import Trajectory, ReferenceFrame
 
-def set_fixed_kernel(hyperparameters: NDArray) -> Kernel :
-    return (
-            ConstantKernel(
-                constant_value=hyperparameters[0]**2,
-                constant_value_bounds="fixed"
-            ) * RBF(
-                length_scale=hyperparameters[1],
-                length_scale_bounds="fixed"
-            )
-            + WhiteKernel(
-                noise_level=hyperparameters[2]**2,
-                noise_level_bounds="fixed"
-            )
-        )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1.  Variability sweep
@@ -45,6 +28,7 @@ def evaluate_hyperparameter_variability(
     segs: List[int],
     hyperparams: Dict[str, NDArray],
     ref_frame: ReferenceFrame = ReferenceFrame.BOD,
+    output_filename: Optional[Path] = None
 ) -> Tuple[NDArray, List[Trajectory]]:
     """
     For each of the 10 cross-validation hyperparameter sets, fix the GP kernel,
@@ -74,13 +58,15 @@ def evaluate_hyperparameter_variability(
         GP-corrected step-level trajectories, one per fold.
     """
     # ── training data (same for every fold) ──────────────────────────────────
-    output_yawdiff, output_pos, input_feature = compute_training_io(
+    output_yawdiff, output_pos, input_feature = correction.compute_training_io(
         ins_traj_aligned, gt_traj_aligned, segs, ref_frame=ref_frame
     )
 
     n_folds = hyperparams["yaw"].shape[0]           # 10
     rmse_per_fold = np.empty(n_folds)
     corrected_trajs: List[Trajectory] = []
+    min_rmse = np.inf
+    output_df = None
 
     gt_step_traj = gt_traj_aligned[segs]
 
@@ -92,28 +78,51 @@ def evaluate_hyperparameter_variability(
             row = hyperparams[key][fold_idx]
             return row[1:4]          # drop log_marginal_likelihood
 
-        kernel_yaw   = set_fixed_kernel(_hp("yaw"))
-        kernels_pos  = [set_fixed_kernel(_hp(f"pos_{d}")) for d in range(3)]
+        kernel_yaw   = gp.set_fixed_kernel(_hp("yaw"))
+        kernels_pos  = [gp.set_fixed_kernel(_hp(f"pos_{d}")) for d in range(3)]
 
         # ── GP predictions with the fixed kernel (no re-fitting) ─────────────
-        y_yaw_GP, _ = compute_gp_corrections(
+        y_yaw_GP, _ = gp.compute_gp_corrections(
             input_feature, output_yawdiff, kernel=kernel_yaw, n_restarts_optimizer=0
         )
 
         y_pos_GP = np.empty(output_pos.shape)
         for d in range(3):
-            y_pos_GP[d], _ = compute_gp_corrections(
+            y_pos_GP[d], _ = gp.compute_gp_corrections(
                 input_feature, output_pos[d], kernel=kernels_pos[d], n_restarts_optimizer=0
             )
 
         # ── apply corrections and build step-level corrected trajectory ───────
-        gp_traj = apply_corrections(
+        gp_traj = correction.apply_corrections(
             ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=ref_frame
         )
         corrected_trajs.append(gp_traj)
 
         # ── 2-D horizontal RMSE against ground truth ─────────────────────────
         rmse_per_fold[fold_idx] = gp_traj.rmse(gt_step_traj)
+
+        # Save the hyperparameters with the best performance
+        if rmse_per_fold[fold_idx] < min_rmse :
+            records = []
+            for key in ["yaw", "pos_0", "pos_1", "pos_2"]:
+                row = hyperparams[key][fold_idx]  # [log_ml, sigma_f, length_scale, sigma_n]
+                records.append({
+                    "output_type": key,
+                    "fold":        fold_idx + 1,
+                    "log_marginal_likelihood":      row[0],
+                    "sigma_f":     row[1],
+                    "length_scale": row[2],
+                    "sigma_n":     row[3],
+                    "rmse":        rmse_per_fold[fold_idx],
+                })
+            min_rmse = rmse_per_fold[fold_idx]
+            output_df = pl.DataFrame(records)
+
+    if output_filename is not None and output_df is not None :
+        if not output_filename.parent.exists():
+            output_filename.parent.mkdir()
+        output_df.write_csv(output_filename)
+
 
     return rmse_per_fold, corrected_trajs
 

@@ -3,11 +3,7 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Tuple, Optional
-from enum import Enum
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Kernel
-from sklearn.preprocessing import StandardScaler
+from typing import List, Tuple
 
 import src.zupt_ins.orientation as orientation 
 from src.zupt_ins.data_classes import Trajectory, TimeSeries, ReferenceFrame
@@ -82,90 +78,7 @@ def compute_training_io(
 
     return output_yawdiff, output_pos, input_feature
 
-def compute_gp_corrections(
-        x: NDArray[np.floating],
-        y: NDArray[np.floating],
-        kernel: Kernel = (
-            ConstantKernel(
-                constant_value=1.0,
-                constant_value_bounds=(1e-2, 1e1)
-            ) * RBF(
-                length_scale=1.1,
-                length_scale_bounds=(1e-2, 1e1)
-            )
-            + WhiteKernel(
-                noise_level=1e-3,
-                noise_level_bounds=(1e-9, 1e1)
-            )
-        ),
-        n_restarts_optimizer: int = 10
-    ) -> Tuple[NDArray, NDArray]:
-    """
-    Estimate output corrections using leave-one-fold-out Gaussian Process regression.
 
-    Performs 10-fold cross-validation, fitting a GP with an RBF + white noise
-    kernel on each fold. Also computes a static (mean) correction as a baseline.
-
-    Parameters
-    -------
-    x : NDArray[np.floating], shape (n_features, n_samples)
-        Input features, one column per sample.
-    y : NDArray[np.floating], shape (n_samples,)
-        Scalar target values to regress.
-
-    Returns
-    -------
-    y_testing_GP : NDArray[np.floating], shape (n_samples,)
-        GP-predicted corrections assembled across all folds.
-    y_testing_static : NDArray[np.floating], shape (n_samples,)
-        Static correction, equal to the global mean of y for all samples.
-    """
-    n_samples = x.shape[1]
-    y_testing_GP = np.zeros(n_samples)
-    hyperparameters = np.zeros((10,4))
-    D = 10
-
-    # Scale inputs to unit variance — critical for RBF length scale to be meaningful
-    scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
-
-    print(f"Theta before training {np.exp(kernel.theta)}")
-    # exp(theta) = [sigma_f**2, lengthscale, sigma_n**2]
-
-    for i in range(1, D + 1):
-        # --- indices --------------------------------------------------------
-        test_start = int(np.floor(n_samples / D * (i - 1)))
-        test_end   = int(np.floor(n_samples / D * i))
-
-        training_ind = list(range(0, test_start)) + list(range(test_end, n_samples))
-        testing_ind  = list(range(test_start, test_end))
-
-        # --- data -----------------------------------------------------------
-        x_train = x_scaled[training_ind,:]   # (n_train, n_features)
-        y_train = y[training_ind]        # (n_train, )
-        x_test  = x_scaled[testing_ind, :]    # (n_test,  n_features)
-
-        # --- fit + predict --------------------------------------------------
-        model = GaussianProcessRegressor(
-            kernel=kernel,
-            normalize_y=True,
-            n_restarts_optimizer=n_restarts_optimizer,
-            alpha=0.0
-        )
-        model.fit(x_train, y_train)
-        y_testing_GP[testing_ind] = model.predict(x_test)
-
-        if n_restarts_optimizer > 0 :
-            batch_hyperparams = np.array([
-                model.log_marginal_likelihood_value_,
-                np.exp(model.kernel_.theta[0]/2),           # sigma_f
-                np.exp(model.kernel_.theta[1]),             # length scale
-                np.exp(model.kernel_.theta[2]/2)            # sigma_n 
-            ])
-            hyperparameters[i-1] = batch_hyperparams
-                
-
-    return y_testing_GP, hyperparameters
 
 def compute_static_correctons(
         x: NDArray[np.floating],
@@ -173,7 +86,6 @@ def compute_static_correctons(
     ) -> NDArray:
     n_samples = x.shape[1]
     return np.full(n_samples, float(np.mean(y)))
-
 
 def apply_corrections(
     traj: Trajectory,
@@ -244,12 +156,14 @@ def apply_corrections(
         R_nb = new_R,  # carry corrected R if available, else original
     )
 
+
+
 if __name__ == "__main__" :
     import src.zupt_ins.pipeline as pipeline
     import matplotlib.pyplot as plt
-    import polars as pl
     import src.plotting.plot_trajectories as plot
     import src.offline_correction.hyperparameter_variability as variability
+    import src.offline_correction.gp as gp
 
     # Compute INS trajectory
     ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
@@ -263,41 +177,23 @@ if __name__ == "__main__" :
     output_yawdiff, output_pos, input_feature = compute_training_io(
         ins_traj_aligned, gt_traj_aligned, segs, ref_frame=FRAME)
 
-    # Regress test outputs
+    # Regress test outputs and optimize hyperparameters
     hyperparams = {}
 
     print(f"--- Computing dimension yaw corrections ---")
-    y_yaw_GP, hyperparams["yaw"]= compute_gp_corrections(input_feature, output_yawdiff)
+    y_yaw_GP, hyperparams["yaw"]= gp.compute_gp_corrections(input_feature, output_yawdiff)
     y_yaw_static = compute_static_correctons(input_feature, output_yawdiff)
 
     y_pos_GP = np.empty(output_pos.shape)
     y_pos_static = np.empty(output_pos.shape)
     for d in range(3):
         print(f"--- Computing dimension {d} corrections ---")
-        y_pos_GP[d, :], hyperparams[f"pos_{d}"] = compute_gp_corrections(input_feature, output_pos[d, :])
+        y_pos_GP[d, :], hyperparams[f"pos_{d}"] = gp.compute_gp_corrections(input_feature, output_pos[d, :])
         y_pos_static[d, :] = compute_static_correctons(input_feature, output_pos[d, :])
 
-    from src.offline_correction.hsgp import compute_hsgp_corrections
-    m = [30,30,3]
-    y_yaw_hsgp = compute_hsgp_corrections(
-        input_feature,
-        output_yawdiff,
-        m = m,
-        ls = hyperparams["yaw"][6,1],
-        sigma_f= hyperparams["yaw"][6,2],
-        sigma_n= hyperparams["yaw"][6,3],
+    gp.hyperparameters_to_csv(
+        hyperparams, PROJECT_ROOT / "out/hyperparameters/python/all_hyperparameters.csv"
     )
-
-    y_pos_hsgp = np.empty(output_pos.shape)
-    for d in range(3):
-        print(f"--- Computing dimension {d} corrections ---")
-        y_pos_hsgp[d, :] = compute_hsgp_corrections(
-            input_feature, output_pos[d, :],
-            m = m,
-            ls = hyperparams[f"pos_{d}"][6,1],
-            sigma_f= hyperparams[f"pos_{d}"][6,2],
-            sigma_n= hyperparams[f"pos_{d}"][6,3],
-        )
 
 
     # # Regress test outputs with step time feature added
@@ -318,42 +214,31 @@ if __name__ == "__main__" :
     # for d in range(3):
     #     print(f"--- Computing dimension {d} corrections ---")
     #     y_pos_GP_aug[d, :], _, hyperparams[f"pos_{d}_dt"] = compute_corrections(augmen_feature, output_pos[d, :],kernel)
-
-    GP_step_traj = apply_corrections(ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
-    static_step_traj = apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, ref_frame=FRAME)
-    hsgp_step_traj = apply_corrections(ins_traj_aligned, y_yaw_hsgp, y_pos_hsgp, segs, ref_frame=FRAME)
-
+    
+    # Compute stepwise trajectories
     GT_step_traj = gt_traj_aligned[segs]
     ins_step_traj = ins_traj_aligned[segs]
-    # GP_step_traj_aug = apply_corrections(ins_traj_aligned, y_yaw_GP_aug, y_pos_GP_aug, segs, ref_frame=FRAME)
+    static_step_traj = apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, ref_frame=FRAME)
+    GP_step_traj = apply_corrections(ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
 
-    for key, val in hyperparams.items():
-        df = pl.from_numpy(val, ["log_marginal_likelihood", "sigma_f","length_scale", "sigma_n"])
-        filename = PROJECT_ROOT / f"out/hyperparameters/python/hyperparams_{key}.csv"
-        if not filename.parent.exists():
-            filename.parent.mkdir(exist_ok=True)
-        df.write_csv(filename)
+    static_rmse = static_step_traj.rmse(GT_step_traj)
+    ins_rmse    = ins_step_traj.rmse(GT_step_traj)
+
+    rmse_per_fold, corrected_trajs = variability.evaluate_hyperparameter_variability(
+        ins_traj_aligned, gt_traj_aligned, segs, hyperparams, ref_frame=FRAME,
+        output_filename=PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
+    )
+    variability.plot_hyperparameter_rmse_variability(rmse_per_fold, ins_rmse, static_rmse)
+
+    # GP_step_traj_aug = apply_corrections(ins_traj_aligned, y_yaw_GP_aug, y_pos_GP_aug, segs, ref_frame=FRAME)
 
     trajs = {
         "model" : ins_step_traj,
         "model + static" : static_step_traj,
         "model + GP" : GP_step_traj,
-        "model + HSGP" : hsgp_step_traj
         # "model + GP + dt" : GP_step_traj_aug
     }
 
-    rmse_per_fold, corrected_trajs = variability.evaluate_hyperparameter_variability(
-        ins_traj_aligned, gt_traj_aligned, segs, hyperparams, ref_frame=FRAME
-    )
-
-    # Compute baselines for the plot
-    ins_step_traj = ins_traj_aligned[segs]
-    GT_step_traj  = gt_traj_aligned[segs]
-
-    ins_rmse    = ins_step_traj.rmse(GT_step_traj)
-    static_rmse = static_step_traj.rmse(GT_step_traj)
-
-    variability.plot_hyperparameter_rmse_variability(rmse_per_fold, ins_rmse, static_rmse)
     plot.plot_groundtruth_vs_inertial_positions(trajs, GT_step_traj[:20])
     plot.plot_groundtruth_vs_inertial_orientations(trajs, GT_step_traj)
     plot.plot_position_rmse(trajs, GT_step_traj)
