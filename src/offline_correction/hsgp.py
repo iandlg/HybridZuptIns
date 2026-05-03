@@ -110,7 +110,7 @@ def compute_hsgp_corrections(
         ls: float | NDArray[np.floating] = 1.0,
         sigma_f: float = 1.0,
         sigma_n: float = 1.0,
-        L: float | NDArray[np.floating] = 1.5
+        margin: float = 1.8
     ) -> NDArray:
     """
     Estimate output corrections using leave-one-fold-out Gaussian Process regression.
@@ -137,14 +137,17 @@ def compute_hsgp_corrections(
     y_testing_GP = np.zeros(n_samples)
     D = 10
     
-    if isinstance(L, float):
-        L = np.ones(n_dim, dtype=float) * L
-
-    eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
-
     # Scale inputs to unit variance — critical for RBF length scale to be meaningful
     scaler = StandardScaler()
     x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
+
+    # L should cover the scaled domain with some margin
+    margin = 1.5
+    L = margin * np.abs(x_scaled).max(axis=0)   # (d,) — per-dimension, post-scaling
+
+    print(L)
+
+    eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
 
     for i in range(1, D + 1):
         # --- indices --------------------------------------------------------
@@ -232,8 +235,8 @@ if __name__ == "__main__" :
     gp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_gp, y_pos_gp, segs, FRAME)
 
     # Apply HSGP correction
-    m = 400
-    L = np.array([5,5,2])
+    m = 250
+    margin = 2
 
     mean_step_size = np.mean(np.linalg.norm(input_feature, axis=0))
     max_distance = np.max(np.linalg.norm(input_feature, axis=0))
@@ -245,7 +248,7 @@ if __name__ == "__main__" :
         ls = hyperparameters["yaw"][0,2],
         sigma_f= hyperparameters["yaw"][0,1],
         sigma_n= hyperparameters["yaw"][0,3],
-        L=L
+        margin=margin
     )
 
     y_pos_hsgp = np.empty(output_pos.shape)
@@ -256,7 +259,7 @@ if __name__ == "__main__" :
             ls = hyperparameters[f"pos_{d}"][0,2],
             sigma_f= hyperparameters[f"pos_{d}"][0,1],
             sigma_n= hyperparameters[f"pos_{d}"][0,3],
-            L=L
+            margin=margin
         )
 
     hsgp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_hsgp, y_pos_hsgp, segs, ref_frame=FRAME)
