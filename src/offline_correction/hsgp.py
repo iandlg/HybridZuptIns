@@ -6,7 +6,9 @@ from numpy.typing import NDArray
 from typing import List, Tuple, Optional, Sequence
 
 from sklearn.preprocessing import StandardScaler
-    
+
+type ArrayLike = NDArray | Sequence[float | int]
+
 def power_spectral_density(
         omega: NDArray,
         n_dims: int,
@@ -35,42 +37,76 @@ def power_spectral_density(
     exp = np.exp(-0.5 * np.dot(np.square(omega), np.square(ls_arr)))  # (m_star,)
     return sigma_f**2 * c * np.prod(ls_arr) * exp       # (m_star,)
 
-def calc_eigenvalues(L: NDArray, m: Sequence[int]) -> NDArray:
-    """Calculate eigenvalues of the Laplacian."""
-    temp = [np.arange(1, 1 + m[d]) for d in range(len(m))]
-    S = np.meshgrid(*temp)
-    S_arr = np.vstack([s.flatten() for s in S]).T
-    print(S_arr)
-    return np.square((np.pi * S_arr) / (2 * L))
+def calc_eigenvalues(L: ArrayLike, m: int, d: int) -> NDArray:
+    """
+    Calculate eigenvalues of the Laplacian on [-L1,L1] x ... x [-Ld,Ld]
+    with Dirichlet boundary conditions, returning the m smallest.
 
-def calc_eigenvectors(Xs: NDArray, L: NDArray, eigvals: NDArray) -> NDArray:
+    Parameters
+    ----------
+    L : NDArray, shape (d,)
+        Domain half-widths per dimension.
+    m : int
+        Number of eigenfunctions to return.
+    d : int
+        Number of input dimensions.
+
+    Returns
+    -------
+    selected_per_dim_eigenvalues : NDArray, shape (m,d)
+        The m smallest eigenvalues, sorted ascending.
+    """
+    L = np.asarray(L, dtype=float)
+    
+    # Number of indices per dimension, scaled by relative domain size
+    N_per_dim = np.ceil(m ** (1 / d) * L / L.min()).astype(int)
+
+    # Build full multi-index grid (Cartesian product of per-dim indices)
+    temp = [np.arange(1, 1 + N_per_dim[dim]) for dim in range(d)]
+    grids = np.meshgrid(*temp, indexing='ij')
+    NN = np.vstack([g.ravel() for g in grids]).T      # (N_total, d)
+
+    # Compute all eigenvalues
+    per_dim_eigvals = np.square((np.pi * NN) / (2 * L)) # (N_total, d)
+    all_eigenvalues = np.sum(per_dim_eigvals, axis=1)
+
+    # Sort and keep the m smallest
+    sort_idx = np.argsort(all_eigenvalues)[:m]
+    selected_per_dim_eigenvalues = per_dim_eigvals[sort_idx]
+    # NN = NN[sort_idx]
+
+    return selected_per_dim_eigenvalues
+
+def calc_eigenvectors(Xs: NDArray, L: ArrayLike, per_dim_eigvals: NDArray) -> NDArray:
     """Calculate eigenvectors of the Laplacian.
     These are used as basis vectors in the HSGP approximation.
 
     Parameters
     ----------
-    Xs      : NDArray, shape (n_samples, d)
-    L       : NDArray, shape (d,)
-    eigvals : NDArray, shape (m_star, d)
-    m       : Sequence[int], shape (d,)
+    Xs              : NDArray, shape (n_samples, d)
+    L               : NDArray, shape (d,)
+    per_dim_eigvals : NDArray, shape (m, d)
+        Per dimension eigenvalues, with the smallest sum
 
     Returns
     -------
-    phi : NDArray, shape (n_samples, m_star)
+    phi : NDArray, shape (n_samples, m)
     """
-    # (1, m_star, d) * (n_samples, 1, d) -> (n_samples, m_star, d)
-    term1 = np.sqrt(eigvals)[None, :, :]          # (1, m_star, d)
+    L = np.asarray(L, dtype=float)
+    
+    # (1, m, d) * (n_samples, 1, d) -> (n_samples, m, d)
+    term1 = np.sqrt(per_dim_eigvals)[None, :, :]          # (1, m, d)
     term2 = Xs[:, None, :] + L[None, None, :]     # (n_samples, 1, d) + (1, 1, d)
     c = 1.0 / np.sqrt(L)                          # (d,)
 
-    phi = c * np.sin(term1 * term2)               # (n_samples, m_star, d)
-    return np.prod(phi, axis=-1)                  # (n_samples, m_star)
+    phi = c * np.sin(term1 * term2)               # (n_samples, m, d)
+    return np.prod(phi, axis=-1)                  # (n_samples, m)
 
 
 def compute_hsgp_corrections(
         x: NDArray[np.floating],
         y: NDArray[np.floating],
-        m: Sequence[int] | int = 25,
+        m: int = 25,
         ls: float | NDArray[np.floating] = 1.0,
         sigma_f: float = 1.0,
         sigma_n: float = 1.0,
@@ -100,14 +136,11 @@ def compute_hsgp_corrections(
     n_dim = x.shape[0]
     y_testing_GP = np.zeros(n_samples)
     D = 10
-
-    if isinstance(m, int) : 
-        m = [m]*n_dim
     
     if isinstance(L, float):
         L = np.ones(n_dim, dtype=float) * L
 
-    eigvals = calc_eigenvalues(L, m)  # type: ignore # (m_start, d)
+    eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
 
     # Scale inputs to unit variance — critical for RBF length scale to be meaningful
     scaler = StandardScaler()
@@ -199,7 +232,7 @@ if __name__ == "__main__" :
     gp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_gp, y_pos_gp, segs, FRAME)
 
     # Apply HSGP correction
-    m = [50,50,20]
+    m = 400
     L = np.array([5,5,2])
 
     mean_step_size = np.mean(np.linalg.norm(input_feature, axis=0))
