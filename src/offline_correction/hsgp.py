@@ -6,30 +6,38 @@ from numpy.typing import NDArray
 from typing import List, Tuple, Optional, Sequence
 
 from sklearn.preprocessing import StandardScaler
+from config.results_io import save_hsgp_run
 
 type ArrayLike = NDArray | Sequence[float | int]
 
 def power_spectral_density(
         omega: NDArray,
-        n_dims: int,
-        ls: float | NDArray[np.floating],
-        sigma_f: float = 1.0
+        ls: float | NDArray,
+        n_dims: int, 
+        sigma_f : float
     ) -> NDArray:
     """
-    Power spectral density for the ExpQuad kernel.
+    Power spectral density for the Squated Exponential (SE) kernel.
 
     .. math::
 
         S(\\boldsymbol\\omega) =
-            (\\sqrt(2 \\pi)^D \\prod_{i}^{D}\\ell_i
+            \\sigma_f^2(\\sqrt(2 \\pi)^D \\prod_{i}^{D}\\ell_i
             \\exp\\left( -\\frac{1}{2} \\sum_{i}^{D}\\ell_i^2 \\omega_i^{2} \\right)
 
-    Args:
-        omega: array of shape (m_star, d), frequencies at which to evaluate the PSD.
-        ls:    lengthscale(s), either a scalar or array of shape (d,).
-        n_dims: number of input dimensions D.
+    Parameters
+    ----------
+        omega: NDArray (m_star, d),
+            Frequencies at which to evaluate the PSD. Frequencies are per dimension.
+        ls: float | NDArray,
+            Length scale either a scalar or array of shape (d,).
+        n_dims: int,
+            Number of input dimensions d.
+        sigma_f : float,
+            Standard deviation of the squared exponential kernel
 
-    Returns:
+    Returns
+    --------
         Array of shape (m_star,), one PSD value per basis function.
     """
     ls_arr = np.ones(n_dims) * ls          # (d,)
@@ -73,7 +81,6 @@ def calc_eigenvalues(L: ArrayLike, m: int, d: int) -> NDArray:
     # Sort and keep the m smallest
     sort_idx = np.argsort(all_eigenvalues)[:m]
     selected_per_dim_eigenvalues = per_dim_eigvals[sort_idx]
-    # NN = NN[sort_idx]
 
     return selected_per_dim_eigenvalues
 
@@ -107,7 +114,7 @@ def compute_hsgp_corrections(
         x: NDArray[np.floating],
         y: NDArray[np.floating],
         m: int = 25,
-        ls: float | NDArray[np.floating] = 1.0,
+        ls: float | NDArray = 1.0,
         sigma_f: float = 1.0,
         sigma_n: float = 1.0,
         margin: float = 1.8
@@ -144,9 +151,6 @@ def compute_hsgp_corrections(
     # L should cover the scaled domain with some margin
     margin = 1.5
     L = margin * np.abs(x_scaled).max(axis=0)   # (d,) — per-dimension, post-scaling
-
-    print(L)
-
     eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
 
     for i in range(1, D + 1):
@@ -166,20 +170,23 @@ def compute_hsgp_corrections(
         phi = calc_eigenvectors(x_train, L, eigvals)  # (n_samples, m_star)
         phi_star = calc_eigenvectors(x_test, L, eigvals)
         omega = np.sqrt(eigvals)  # (m_star, d)
-        psd = power_spectral_density(omega, n_dim, ls, sigma_f) 
+        psd = power_spectral_density(omega, ls, n_dim, sigma_f)
 
-        # A = phi.T @ phi + sigma_n**2 * np.diag(1 / psd)
-        # L_chol = np.linalg.cholesky(A)                          # (m_star, m_star)
-        # alpha = np.linalg.solve(L_chol.T, np.linalg.solve(L_chol, phi.T @ y_train))
+        Lambda_inv = np.diag(1/psd)
 
-        # y_testing_GP[testing_ind] = phi_star @ alpha    # predictive mean
+        # A = σ_n² Λ^{-1} + ΦᵀΦ
+        A = Lambda_inv * sigma_n**2 + (phi.T @ phi)  # (m, m)
 
-        Lambda = np.diag(psd)                                        # (m_star, m_star)
-        K_nm   = phi @ Lambda @ phi.T                                # (n_train, n_train)
-        A      = K_nm + sigma_n**2 * np.eye(len(y_train))           # (n_train, n_train)
-        alpha  = np.linalg.solve(A, y_train)                         # (n_train,)
-        y_testing_GP[testing_ind] = phi_star @ Lambda @ phi.T @ alpha                # (n_test,)
-        # var = sigma_f**2 - np.sum(phi_star @ np.linalg.solve(L_chol, phi_star.T).T, axis=1)  # predictive variance                
+        # Cholesky factorisation: A = L Lᵀ
+        L_chol = np.linalg.cholesky(A)          # (m, m), lower triangular
+
+        # Solve A @ alpha = Φᵀ y  via two triangular solves
+        # L v = Φᵀ y,  then Lᵀ alpha = v
+        rhs   = phi.T @ y_train                          # (m,)
+        v     = np.linalg.solve(L_chol, rhs)             # forward  substitution
+        alpha = np.linalg.solve(L_chol.T, v)             # backward substitution
+
+        y_testing_GP[testing_ind] = phi_star @ alpha     # (N_test,)
 
     return y_testing_GP
 
@@ -190,10 +197,14 @@ if __name__ == "__main__" :
     import src.offline_correction.batch_correction as batch_correction
     from src.zupt_ins.data_classes import ReferenceFrame
 
+    # Save parameters and results
+    data_path = PROJECT_ROOT / "data/angermann_high_precision"
+    trial_id = 15
+
     # Compute INS trajectory
     ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
-        data_path=PROJECT_ROOT / "data/angermann_high_precision",
-        trial_id=15,
+        data_path=data_path,
+        trial_id=trial_id,
     )
 
     FRAME = ReferenceFrame.BOD
@@ -235,7 +246,7 @@ if __name__ == "__main__" :
     gp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_gp, y_pos_gp, segs, FRAME)
 
     # Apply HSGP correction
-    m = 250
+    m = 220
     margin = 2
 
     mean_step_size = np.mean(np.linalg.norm(input_feature, axis=0))
@@ -273,6 +284,36 @@ if __name__ == "__main__" :
         "model + HSGP" : hsgp_step_traj
         # "model + GP + dt" : GP_step_traj_aug
     }
+
+    hyp_dict = {}
+    for dim_key in ["yaw", "pos_0", "pos_1", "pos_2"]:
+        hyp_dict[dim_key] = {}
+        for idx, hyp_key in enumerate(["sigma_f", "ls", "sigma_n"]):
+            hyp_dict[dim_key][hyp_key] = hyperparameters[dim_key][0,idx+1]
+
+
+    parameters = {
+        "data_path": str(data_path),
+        "trial_id": trial_id,
+        "local_reference_frame": str(FRAME),
+        "m": m,
+        "margin": margin,
+        "hyperparameters" : hyp_dict,
+    }
+    
+    # Compute RMSE for each trajectory
+    rmse_results = {}
+    for traj_name, traj in trajs.items():
+        rmse_results[traj_name] = traj.rmse(gt_step_traj)
+    
+    filepath = save_hsgp_run(
+        output_dir=PROJECT_ROOT / "out/offline_correction/hsgp",
+        parameters=parameters,
+        rmse_results=rmse_results,
+    )
+    print(f"Results saved to: {filepath.relative_to(PROJECT_ROOT)}")
+    
+    # Plot results
     import src.plotting.plot_trajectories as plot
     import matplotlib.pyplot as plt
     plot.plot_groundtruth_vs_inertial_positions(trajs, gt_step_traj[:20])
