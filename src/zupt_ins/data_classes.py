@@ -16,9 +16,9 @@ from src.zupt_ins import orientation
 _MM_TO_M = 0.001
 
 class ReferenceFrame(Enum):
-    BOD = 1
-    HED = 2
-    NAV = 3
+    BODY = 1
+    HEADING = 2
+    NAVIGATION = 3
 
 @dataclass(frozen=True)
 class TimeSeries :

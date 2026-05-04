@@ -7,24 +7,15 @@ from sklearn.preprocessing import StandardScaler
 from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Tuple, Optional, Dict
+from typing import Tuple, Dict
 import polars as pl
 
 def compute_gp_corrections(
         x: NDArray[np.floating],
         y: NDArray[np.floating],
         kernel: Kernel = (
-            ConstantKernel(
-                constant_value=1.0,
-                constant_value_bounds=(1e-2, 1e1)
-            ) * RBF(
-                length_scale=1.1,
-                length_scale_bounds=(1e-2, 1e1)
-            )
-            + WhiteKernel(
-                noise_level=1e-3,
-                noise_level_bounds=(1e-9, 1e1)
-            )
+            ConstantKernel() * RBF()
+            + WhiteKernel()
         ),
         n_restarts_optimizer: int = 10
     ) -> Tuple[NDArray, NDArray]:
@@ -49,7 +40,7 @@ def compute_gp_corrections(
         Static correction, equal to the global mean of y for all samples.
     """
     n_samples = x.shape[1]
-    y_testing_GP = np.zeros(n_samples)
+    y_testing_gp = np.zeros(n_samples)
     hyperparameters = np.zeros((10,4))
     D = 10
 
@@ -78,7 +69,11 @@ def compute_gp_corrections(
             alpha=0.0
         )
         model.fit(x_train, y_train)
-        y_testing_GP[testing_ind] = model.predict(x_test)
+        y_testing_gp[testing_ind] = model.predict(x_test)
+
+        regression_rmse = np.sqrt(
+            np.mean((y[testing_ind] - y_testing_gp[testing_ind]) ** 2)
+        )
 
         if n_restarts_optimizer > 0 :
             batch_hyperparams = np.array([
@@ -89,8 +84,7 @@ def compute_gp_corrections(
             ])
             hyperparameters[i-1] = batch_hyperparams
                 
-
-    return y_testing_GP, hyperparameters
+    return y_testing_gp, hyperparameters
 
 
 def hyperparameters_to_csv(
@@ -104,8 +98,8 @@ def hyperparameters_to_csv(
     ----------
     hyperparams : dict
         Dictionary with keys ``"yaw"``, ``"pos_0"``, ``"pos_1"``, ``"pos_2"``.
-        Each value is an ``(10, 4)`` array whose columns are
-        ``[log_marginal_likelihood, sigma_f, length_scale, sigma_n]``.
+        Each value is an ``(10, 5)`` array whose columns are
+        ``[log_marginal_likelihood, regression_rmse, sigma_f, length_scale, sigma_n]``.
     output_path : str, optional
         Path to the output CSV file (relative to PROJECT_ROOT).
     """
@@ -144,8 +138,8 @@ def hyperparameters_from_csv(
     -------
     hyperparams : Dict[str, NDArray]
         Dictionary with keys ``"yaw"``, ``"pos_0"``, ``"pos_1"``, ``"pos_2"``.
-        Each value is an ``(10, 4)`` array whose columns are
-        ``[log_marginal_likelihood, sigma_f, length_scale, sigma_n]``.
+        Each value is an ``(10, 5)`` array whose columns are
+        ``[log_marginal_likelihood, regression_rmse, sigma_f, length_scale, sigma_n]``.
     """
     filename = PROJECT_ROOT / input_path if isinstance(input_path, str) else input_path
     df = pl.read_csv(filename)
@@ -157,7 +151,7 @@ def hyperparameters_from_csv(
         subset = df.filter(pl.col("output_type") == output_type).sort("fold")
         n_folds = subset.shape[0]
         
-        data = np.zeros((n_folds, 4))
+        data = np.zeros((n_folds, 5))
         data[:, 0] = subset["log_marginal_likelihood"].to_numpy()
         data[:, 1] = subset["sigma_f"].to_numpy()
         data[:, 2] = subset["length_scale"].to_numpy()

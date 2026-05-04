@@ -16,18 +16,12 @@ import src.offline_correction.batch_correction as correction
 import src.offline_correction.gp as gp
 from src.zupt_ins.data_classes import Trajectory, ReferenceFrame
 
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 1.  Variability sweep
-# ──────────────────────────────────────────────────────────────────────────────
-
 def evaluate_hyperparameter_variability(
     ins_traj_aligned: Trajectory,
     gt_traj_aligned: Trajectory,
     segs: List[int],
     hyperparams: Dict[str, NDArray],
-    ref_frame: ReferenceFrame = ReferenceFrame.BOD,
+    ref_frame: ReferenceFrame = ReferenceFrame.BODY,
     output_filename: Optional[Path] = None
 ) -> Tuple[NDArray, List[Trajectory]]:
     """
@@ -125,11 +119,6 @@ def evaluate_hyperparameter_variability(
 
 
     return rmse_per_fold, corrected_trajs
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 2.  Plotting
-# ──────────────────────────────────────────────────────────────────────────────
 
 def plot_hyperparameter_rmse_variability(
     rmse_per_fold: NDArray,

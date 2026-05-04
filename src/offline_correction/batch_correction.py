@@ -13,7 +13,7 @@ def compute_training_io(
         traj: Trajectory,
         traj_gt: Trajectory,
         step_seg: List[int],
-        ref_frame: ReferenceFrame = ReferenceFrame.BOD
+        ref_frame: ReferenceFrame = ReferenceFrame.BODY
     ) -> Tuple[
         NDArray[np.floating],
         NDArray[np.floating],
@@ -67,8 +67,8 @@ def compute_training_io(
     
     # Compute Step vectors in specified reference frame
     funs = {
-        ReferenceFrame.BOD : Trajectory.step_vectors_body,
-        ReferenceFrame.HED : Trajectory.step_vectors_heading
+        ReferenceFrame.BODY : Trajectory.step_vectors_body,
+        ReferenceFrame.HEADING : Trajectory.step_vectors_heading
     }
 
     input_feature = funs[ref_frame](traj, step_seg)
@@ -92,7 +92,7 @@ def apply_corrections(
     yawdiff_correction: NDArray[np.floating],
     pos_correction: NDArray[np.floating],
     segs: List[int],
-    ref_frame: ReferenceFrame = ReferenceFrame.BOD
+    ref_frame: ReferenceFrame = ReferenceFrame.BODY
 ) -> Trajectory:
     """
     Apply yaw and position corrections to produce a corrected step-wise trajectory.
@@ -140,8 +140,8 @@ def apply_corrections(
 
     # Compute Step vectors in specified reference frame
     funs = {
-        ReferenceFrame.BOD : Trajectory.step_vectors_body,
-        ReferenceFrame.HED : Trajectory.step_vectors_heading
+        ReferenceFrame.BODY : Trajectory.step_vectors_body,
+        ReferenceFrame.HEADING : Trajectory.step_vectors_heading
     }
 
     steps = funs[ref_frame](traj, segs)
@@ -161,40 +161,80 @@ def apply_corrections(
 if __name__ == "__main__" :
     import src.zupt_ins.pipeline as pipeline
     import matplotlib.pyplot as plt
-    import src.plotting.plot_trajectories as plot
+    import src.plotting.plot_trajectories as plot_traj
+    import src.plotting.plot_corrections as plot_corr
     import src.offline_correction.hyperparameter_variability as variability
     import src.offline_correction.gp as gp
+    from sklearn.gaussian_process.kernels import RBF, WhiteKernel, ConstantKernel, Kernel
+    from src.config.results_io import save_batch_correction_run, ResultsSaver
+    
+    config = ResultsSaver.load_json(
+        PROJECT_ROOT / "src/config/batch_correction_configs/gp_kernel_parameters_body_dev.json"
+    )
+
+    data_path = PROJECT_ROOT / config["data_path"]
+    trial_id = config["trial_id"]
+    FRAME = ReferenceFrame(config["local_reference_frame"])
+
+    n_restart_optimizer = config["n_restart_optimizer"]
+    opt_parameters = config["optimization_parameters"]
 
     # Compute INS trajectory
     ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
-        data_path=PROJECT_ROOT / "data/angermann_high_precision",
-        trial_id=15,
+        data_path=data_path,
+        trial_id=trial_id,
     )
-
-    FRAME = ReferenceFrame.BOD
 
     # Compute inputs and outputs for regression
     output_yawdiff, output_pos, input_feature = compute_training_io(
         ins_traj_aligned, gt_traj_aligned, segs, ref_frame=FRAME)
 
-    # Regress test outputs and optimize hyperparameters
+    # Regress test outputs and optimize 
     hyperparams = {}
 
     print(f"--- Computing dimension yaw corrections ---")
-    y_yaw_GP, hyperparams["yaw"]= gp.compute_gp_corrections(input_feature, output_yawdiff)
+    yaw_kernel = (
+        ConstantKernel(
+                constant_value=opt_parameters["yaw"]["var_f"]["init"],
+                constant_value_bounds=opt_parameters["yaw"]["var_f"]["bounds"]
+            ) * RBF(
+                length_scale=opt_parameters["yaw"]["ls"]["init"],
+                length_scale_bounds=opt_parameters["yaw"]["ls"]["bounds"],
+            )
+            + WhiteKernel(
+                noise_level=opt_parameters["yaw"]["var_f"]["init"],
+                noise_level_bounds=opt_parameters["yaw"]["var_n"]["bounds"]
+            )
+    )
+    y_yaw_gp, hyperparams["yaw"]= gp.compute_gp_corrections(
+        input_feature, output_yawdiff, n_restarts_optimizer=n_restart_optimizer)
     y_yaw_static = compute_static_correctons(input_feature, output_yawdiff)
 
-    y_pos_GP = np.empty(output_pos.shape)
+    y_pos_gp = np.empty(output_pos.shape)
     y_pos_static = np.empty(output_pos.shape)
     for d in range(3):
         print(f"--- Computing dimension {d} corrections ---")
-        y_pos_GP[d, :], hyperparams[f"pos_{d}"] = gp.compute_gp_corrections(input_feature, output_pos[d, :])
+        pos_key = f"pos_{d}"
+        pos_kernel = (
+            ConstantKernel(
+                    constant_value=opt_parameters[pos_key]["var_f"]["init"],
+                    constant_value_bounds=opt_parameters[pos_key]["var_f"]["bounds"]
+                ) * RBF(
+                    length_scale=opt_parameters[pos_key]["ls"]["init"],
+                    length_scale_bounds=opt_parameters[pos_key]["ls"]["bounds"],
+                )
+                + WhiteKernel(
+                    noise_level=opt_parameters[pos_key]["var_f"]["init"],
+                    noise_level_bounds=opt_parameters[pos_key]["var_n"]["bounds"]
+                )
+        )
+        y_pos_gp[d, :], hyperparams[pos_key] = gp.compute_gp_corrections(
+            input_feature, output_pos[d, :], n_restarts_optimizer=n_restart_optimizer)
         y_pos_static[d, :] = compute_static_correctons(input_feature, output_pos[d, :])
 
     gp.hyperparameters_to_csv(
         hyperparams, PROJECT_ROOT / "out/hyperparameters/python/all_hyperparameters.csv"
     )
-
 
     # # Regress test outputs with step time feature added
     # print(f"--- Computing dimension yaw corrections ---")
@@ -216,34 +256,49 @@ if __name__ == "__main__" :
     #     y_pos_GP_aug[d, :], _, hyperparams[f"pos_{d}_dt"] = compute_corrections(augmen_feature, output_pos[d, :],kernel)
     
     # Compute stepwise trajectories
-    GT_step_traj = gt_traj_aligned[segs]
+    gt_step_traj = gt_traj_aligned[segs]
     ins_step_traj = ins_traj_aligned[segs]
     static_step_traj = apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, ref_frame=FRAME)
-    GP_step_traj = apply_corrections(ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=FRAME)
+    gp_step_traj = apply_corrections(ins_traj_aligned, y_yaw_gp, y_pos_gp, segs, ref_frame=FRAME)
 
-    static_rmse = static_step_traj.rmse(GT_step_traj)
-    ins_rmse    = ins_step_traj.rmse(GT_step_traj)
-
-    rmse_per_fold, corrected_trajs = variability.evaluate_hyperparameter_variability(
-        ins_traj_aligned, gt_traj_aligned, segs, hyperparams, ref_frame=FRAME,
-        output_filename=PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
-    )
-    variability.plot_hyperparameter_rmse_variability(rmse_per_fold, ins_rmse, static_rmse)
-
-    # GP_step_traj_aug = apply_corrections(ins_traj_aligned, y_yaw_GP_aug, y_pos_GP_aug, segs, ref_frame=FRAME)
+    static_rmse = static_step_traj.rmse(gt_step_traj)
+    ins_rmse    = ins_step_traj.rmse(gt_step_traj)
 
     trajs = {
         "model" : ins_step_traj,
         "model + static" : static_step_traj,
-        "model + GP" : GP_step_traj,
+        "model + GP" : gp_step_traj,
         # "model + GP + dt" : GP_step_traj_aug
     }
 
-    plot.plot_groundtruth_vs_inertial_positions(trajs, GT_step_traj[:20])
-    plot.plot_groundtruth_vs_inertial_orientations(trajs, GT_step_traj)
-    plot.plot_position_rmse(trajs, GT_step_traj)
-    plot.plot_total_position_rmse(trajs, GT_step_traj)
-    plot.plot_position_distance_error(trajs, GT_step_traj)
+    rmse_results = {}
+    for key, val in trajs.items():
+        rmse_results[key] = val.rmse(gt_step_traj)
+
+    save_batch_correction_run(
+        PROJECT_ROOT / "out/runs/offline_correction/batch",
+        data_path=data_path,
+        trial_id=trial_id,
+        local_reference_frame=str(FRAME),
+        n_restart_optimizer=n_restart_optimizer,
+        rmse_results=rmse_results,
+        opt_parameters=opt_parameters
+    )
+
+    rmse_per_fold, corrected_trajs = variability.evaluate_hyperparameter_variability(
+        ins_traj_aligned, gt_traj_aligned, segs, hyperparams, ref_frame=FRAME,
+        output_filename= PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
+    )
+
+    plot_corr.plot_regression_results(
+        output_yawdiff, y_yaw_static, y_yaw_gp, output_pos, y_pos_static, y_pos_gp)
+    variability.plot_hyperparameter_rmse_variability(
+        rmse_per_fold, rmse_results["model"], rmse_results["model + static"])
+    plot_traj.plot_groundtruth_vs_inertial_positions(trajs, gt_step_traj[:20])
+    plot_traj.plot_groundtruth_vs_inertial_orientations(trajs, gt_step_traj)
+    plot_traj.plot_position_rmse(trajs, gt_step_traj)
+    plot_traj.plot_total_position_rmse(trajs, gt_step_traj)
+    plot_traj.plot_position_distance_error(trajs, gt_step_traj)
     # # Plot the training ouptut data
     # fig, axs = plt.subplots(2, 2)
     # axs = axs.flatten()

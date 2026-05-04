@@ -1,0 +1,100 @@
+{
+    "data_path": "data/angermann_high_precision",
+    "trial_id": 15,
+    "local_reference_frame": 1,
+    "n_restart_optimizer": 10,
+    "optimization_parameters": {
+        "yaw": {
+            "sigma_f": {
+                "init": 1.0,
+                "bounds": [
+                    0.01,
+                    10.0
+                ]
+            },
+            "ls": {
+                "init": 0.5,
+                "bounds": [
+                    0.01,
+                    2.0
+                ]
+            },
+            "sigma_n": {
+                "init": 0.001,
+                "bounds": [
+                    5e-08,
+                    5.0
+                ]
+            }
+        },
+        "pos_0": {
+            "sigma_f": {
+                "init": 1.0,
+                "bounds": [
+                    0.01,
+                    10.0
+                ]
+            },
+            "ls": {
+                "init": 0.5,
+                "bounds": [
+                    0.001,
+                    2.0
+                ]
+            },
+            "sigma_n": {
+                "init": 0.001,
+                "bounds": [
+                    5e-08,
+                    5.0
+                ]
+            }
+        },
+        "pos_1": {
+            "sigma_f": {
+                "init": 1.0,
+                "bounds": [
+                    0.01,
+                    10.0
+                ]
+            },
+            "ls": {
+                "init": 0.5,
+                "bounds": [
+                    0.01,
+                    2.0
+                ]
+            },
+            "sigma_n": {
+                "init": 0.001,
+                "bounds": [
+                    5e-08,
+                    5.0
+                ]
+            }
+        },
+        "pos_2": {
+            "sigma_f": {
+                "init": 1.0,
+                "bounds": [
+                    0.01,
+                    10.0
+                ]
+            },
+            "ls": {
+                "init": 0.5,
+                "bounds": [
+                    0.001,
+                    1.0
+                ]
+            },
+            "sigma_n": {
+                "init": 0.1,
+                "bounds": [
+                    5e-08,
+                    5.0
+                ]
+            }
+        }
+    }
+}

@@ -22,7 +22,7 @@ class NumpyEncoder(json.JSONEncoder):
 class ResultsSaver:
     """Manages saving and loading of HSGP correction results with parameters."""
     
-    def __init__(self, output_dir: str | Path):
+    def __init__(self, output_dir: str | Path, file_prefix: str):
         """
         Initialize results saver.
         
@@ -31,6 +31,7 @@ class ResultsSaver:
         output_dir : str | Path
             Directory where results will be saved.
         """
+        self.file_prefix = file_prefix
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -66,7 +67,7 @@ class ResultsSaver:
         """
         # Generate unique filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"hsgp_run_{timestamp}.json"
+        filename = f"{self.file_prefix}_{timestamp}.json"
         filepath = self.output_dir / filename
         
         # Prepare data structure
@@ -84,7 +85,7 @@ class ResultsSaver:
         return filepath
     
     @staticmethod
-    def load_run(filepath: str | Path) -> Dict[str, Any]:
+    def load_json(filepath: str | Path) -> Dict[str, Any]:
         """
         Load a saved run file.
         
@@ -118,9 +119,83 @@ class ResultsSaver:
         return runs
 
 
+def save_batch_correction_run(
+    output_dir: str | Path,
+    data_path: Path,
+    trial_id: int,
+    local_reference_frame: str,
+    n_restart_optimizer: int,
+    opt_parameters: Dict[str, Any],
+    rmse_results: Dict[str, Any]
+) -> Path:
+    """
+    Convenience function to save a complete batch correction (GP) run.
+    
+    Parameters
+    ----------
+    output_dir : str | Path
+        Directory where results will be saved.
+    data_path : Path
+        Path to the data directory.
+    trial_id : int
+        Trial ID for the dataset.
+    local_reference_frame : str
+        Reference frame used (e.g., "BODY", "HEADING").
+    n_restart_optimizer : int
+        Number of optimizer restarts used for hyperparameter optimization.
+    opt_parameters : Dict[str, Any]
+        Optimization parameter dictionary with dimension keys (yaw, pos_0, pos_1, pos_2).
+    hyperparameters : Dict[str, Any]
+        Optimized hyperparameters dictionary with dimension keys.
+    rmse_results : Dict[str, Any]
+        RMSE dictionary with trajectory names as keys and RMSE values.
+    
+    Returns
+    -------
+    Path
+        Path to the saved file.
+    
+    Examples
+    --------
+    >>> save_batch_correction_run(
+    ...     "out/offline_correction/batch",
+    ...     data_path=Path("data/angermann_high_precision"),
+    ...     trial_id=15,
+    ...     local_reference_frame="BODY",
+    ...     n_restart_optimizer=10,
+    ...     opt_parameters=opt_parameters,
+    ...     hyperparameters=hyperparams,
+    ...     rmse_results={"model": 1.2, "model + GP": 0.8}
+    ... )
+    """
+    saver = ResultsSaver(output_dir, "batch_run")
+    
+    parameters = {
+        "data_path": str(data_path),
+        "trial_id": trial_id,
+        "local_reference_frame": local_reference_frame,
+        "n_restart_optimizer": n_restart_optimizer,
+        "optimization_parameters": opt_parameters,
+    }
+
+    metadata = {}
+    return saver.save_run(
+        parameters=parameters,
+        results={
+            "rmse": rmse_results,
+        },
+        metadata=metadata
+    )
+
+
 def save_hsgp_run(
     output_dir: str | Path,
-    parameters: Dict[str, Any],
+    data_path: Path,
+    trial_id: int,
+    local_reference_frame: str,
+    m: int,
+    margin: float,
+    hyperparameters: Dict[str, Any],
     rmse_results: Dict[str, Any]
 ) -> Path:
     """
@@ -155,8 +230,25 @@ def save_hsgp_run(
     ...     ref_frame="BOD"
     ... )
     """
-    saver = ResultsSaver(output_dir)
+    saver = ResultsSaver(output_dir, "hsgp_run")
     
+    hyp_dict = {}
+    for dim_key in ["yaw", "pos_0", "pos_1", "pos_2"]:
+        hyp_dict[dim_key] = {}
+        for idx, hyp_key in enumerate(["sigma_f", "ls", "sigma_n"]):
+            hyp_dict[dim_key][hyp_key] = hyperparameters[dim_key][0,idx+1]
+
+
+    parameters = {
+        "data_path": str(data_path),
+        "trial_id": trial_id,
+        "local_reference_frame": local_reference_frame,
+        "m": m,
+        "margin": margin,
+        "hyperparameters" : hyp_dict,
+    }
+    
+
     metadata = {}
     return saver.save_run(
         parameters=parameters,

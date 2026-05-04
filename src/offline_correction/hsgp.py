@@ -6,7 +6,6 @@ from numpy.typing import NDArray
 from typing import List, Tuple, Optional, Sequence
 
 from sklearn.preprocessing import StandardScaler
-from config.results_io import save_hsgp_run
 
 type ArrayLike = NDArray | Sequence[float | int]
 
@@ -149,7 +148,6 @@ def compute_hsgp_corrections(
     x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
 
     # L should cover the scaled domain with some margin
-    margin = 1.5
     L = margin * np.abs(x_scaled).max(axis=0)   # (d,) — per-dimension, post-scaling
     eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
 
@@ -196,6 +194,7 @@ if __name__ == "__main__" :
     import src.offline_correction.gp as gp
     import src.offline_correction.batch_correction as batch_correction
     from src.zupt_ins.data_classes import ReferenceFrame
+    from src.config.results_io import save_hsgp_run
 
     # Save parameters and results
     data_path = PROJECT_ROOT / "data/angermann_high_precision"
@@ -207,7 +206,7 @@ if __name__ == "__main__" :
         trial_id=trial_id,
     )
 
-    FRAME = ReferenceFrame.BOD
+    FRAME = ReferenceFrame.BODY
 
     # Compute inputs and outputs for regression
     output_yawdiff, output_pos, input_feature = batch_correction.compute_training_io(
@@ -215,7 +214,7 @@ if __name__ == "__main__" :
     
     # Load hyperparameters from variability results
     hyperparameters = gp.hyperparameters_from_csv(
-        PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
+        PROJECT_ROOT / "out/hyperparameters/python/fixed_hparam_variability_results.csv"
     )
     
     # Apply static correction
@@ -282,43 +281,31 @@ if __name__ == "__main__" :
         "model + static" : static_step_traj,
         "model + GP" : gp_step_traj,
         "model + HSGP" : hsgp_step_traj
-        # "model + GP + dt" : GP_step_traj_aug
-    }
-
-    hyp_dict = {}
-    for dim_key in ["yaw", "pos_0", "pos_1", "pos_2"]:
-        hyp_dict[dim_key] = {}
-        for idx, hyp_key in enumerate(["sigma_f", "ls", "sigma_n"]):
-            hyp_dict[dim_key][hyp_key] = hyperparameters[dim_key][0,idx+1]
-
-
-    parameters = {
-        "data_path": str(data_path),
-        "trial_id": trial_id,
-        "local_reference_frame": str(FRAME),
-        "m": m,
-        "margin": margin,
-        "hyperparameters" : hyp_dict,
     }
     
     # Compute RMSE for each trajectory
     rmse_results = {}
     for traj_name, traj in trajs.items():
         rmse_results[traj_name] = traj.rmse(gt_step_traj)
-    
+
     filepath = save_hsgp_run(
-        output_dir=PROJECT_ROOT / "out/offline_correction/hsgp",
-        parameters=parameters,
+        output_dir=PROJECT_ROOT / "out/runs/offline_correction/hsgp",
+        m=m,
+        local_reference_frame=str(FRAME),
+        margin=margin,
+        hyperparameters=hyperparameters,
         rmse_results=rmse_results,
+        data_path=data_path,
+        trial_id=trial_id
     )
     print(f"Results saved to: {filepath.relative_to(PROJECT_ROOT)}")
     
     # Plot results
-    import src.plotting.plot_trajectories as plot
+    import src.plotting.plot_trajectories as plot_traj
     import matplotlib.pyplot as plt
-    plot.plot_groundtruth_vs_inertial_positions(trajs, gt_step_traj[:20])
-    plot.plot_groundtruth_vs_inertial_orientations(trajs, gt_step_traj)
-    plot.plot_position_rmse(trajs, gt_step_traj)
-    plot.plot_total_position_rmse(trajs, gt_step_traj)
-    plot.plot_position_distance_error(trajs, gt_step_traj)
+    plot_traj.plot_groundtruth_vs_inertial_positions(trajs, gt_step_traj[:20])
+    plot_traj.plot_groundtruth_vs_inertial_orientations(trajs, gt_step_traj)
+    plot_traj.plot_position_rmse(trajs, gt_step_traj)
+    plot_traj.plot_total_position_rmse(trajs, gt_step_traj)
+    plot_traj.plot_position_distance_error(trajs, gt_step_traj)
     plt.show()

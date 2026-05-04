@@ -1,0 +1,100 @@
+{
+    "data_path": "data/angermann_high_precision",
+    "trial_id": 15,
+    "local_reference_frame": 1,
+    "n_restart_optimizer": 10,
+    "optimization_parameters": {
+        "yaw": {
+            "var_f": {
+                "init": 1.0,
+                "bounds": [
+                    1e-2,
+                    1e1
+                ]
+            },
+            "ls": {
+                "init": 1.1,
+                "bounds": [
+                    1e-2,
+                    1e0
+                ]
+            },
+            "var_n": {
+                "init": 1e-3,
+                "bounds": [
+                    1e-9,
+                    1e1
+                ]
+            }
+        },
+        "pos_0": {
+            "var_f": {
+                "init": 1.0,
+                "bounds": [
+                    1e-2,
+                    1e1
+                ]
+            },
+            "ls": {
+                "init": 1.1,
+                "bounds": [
+                    1e-2,
+                    1e1
+                ]
+            },
+            "var_n": {
+                "init": 1e-3,
+                "bounds": [
+                    1e-9,
+                    1e1
+                ]
+            }
+        },
+        "pos_1": {
+            "var_f": {
+                "init": 1.0,
+                "bounds": [
+                    1e-2,
+                    1e1
+                ]
+            },
+            "ls": {
+                "init": 1.1,
+                "bounds": [
+                    1e-2,
+                    1e1
+                ]
+            },
+            "var_n": {
+                "init": 1e-3,
+                "bounds": [
+                    1e-9,
+                    1e1
+                ]
+            }
+        },
+        "pos_2": {
+            "var_f": {
+                "init": 1.0,
+                "bounds": [
+                    1e-2,
+                    1e3
+                ]
+            },
+            "ls": {
+                "init": 1.1,
+                "bounds": [
+                    1e-2,
+                    1e1
+                ]
+            },
+            "var_n": {
+                "init": 1e-3,
+                "bounds": [
+                    1e-9,
+                    1e1
+                ]
+            }
+        }
+    }
+}
