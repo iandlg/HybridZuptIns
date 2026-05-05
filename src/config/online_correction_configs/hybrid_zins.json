@@ -1,0 +1,12 @@
+{
+    "data_path": "data/angermann_high_precision",
+    "trial_id": 15,
+    "local_reference_frame": 2,
+    "gp_parameters": {
+        "hyperparameter_path": "out/hyperparameters/python/fixed_hparam_variability_results.csv",
+        "feature_dim": 3,
+        "m": 200,
+        "feature_standard_deviation": 1.0,
+        "feature_mean": 0.0
+    }
+}

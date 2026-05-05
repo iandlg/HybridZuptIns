@@ -80,7 +80,7 @@ def compute_training_io(
 
 
 
-def compute_static_correctons(
+def compute_static_corrections(
         x: NDArray[np.floating],
         y: NDArray[np.floating],
     ) -> NDArray:
@@ -121,15 +121,21 @@ def apply_corrections(
         Corrected trajectory sampled at the step segment indices, with updated
         positions and orientations.
     """
-    
+    print(ref_frame)    
     euler = traj.euler_nb[:, segs]  # (3, n_steps)
 
     # --- compute corrected yaws ---------------------------------------------
     diff_yaw = np.diff(euler[2, :]) + yawdiff_correction
     new_yaws = np.cumsum(np.concatenate([[euler[2, 0]], diff_yaw]))
-    # new_yaws = (new_yaws + np.pi) % (2 * np.pi) - np.pi  # wrap to [-pi, pi]
 
-    new_euler = euler.copy()
+    new_euler = {
+        ReferenceFrame.BODY: euler.copy(),
+        ReferenceFrame.HEADING: np.zeros_like(euler),
+    }.get(ref_frame) 
+
+    if new_euler is None:
+        raise ValueError(f"Unsupported Reference Frame: {str(ref_frame)}")
+
     new_euler[2, :] = new_yaws
     new_R = orientation.euler_to_matrix(new_euler)
 
@@ -149,11 +155,16 @@ def apply_corrections(
     for k in range(1, n):
         pos_out[:, k] = new_R[:,:,k-1] @ (steps[:,k-1] + pos_correction[:, k - 1]) + pos_out[:, k - 1]
 
+    # Final R_nb rotation
+    new_euler = euler.copy()
+    new_euler[2, :] = new_yaws
+    R_nb_new = orientation.euler_to_matrix(new_euler)
+
     # --- build output trajectory --------------------------------------------
     return Trajectory(
         t   = traj.t[segs],
         pos = pos_out,
-        R_nb = new_R,  # carry corrected R if available, else original
+        R_nb = R_nb_new,
     )
 
 
@@ -207,8 +218,8 @@ if __name__ == "__main__" :
             )
     )
     y_yaw_gp, hyperparams["yaw"]= gp.compute_gp_corrections(
-        input_feature, output_yawdiff, n_restarts_optimizer=n_restart_optimizer)
-    y_yaw_static = compute_static_correctons(input_feature, output_yawdiff)
+        input_feature, output_yawdiff,yaw_kernel, n_restarts_optimizer=n_restart_optimizer)
+    y_yaw_static = compute_static_corrections(input_feature, output_yawdiff)
 
     y_pos_gp = np.empty(output_pos.shape)
     y_pos_static = np.empty(output_pos.shape)
@@ -229,11 +240,11 @@ if __name__ == "__main__" :
                 )
         )
         y_pos_gp[d, :], hyperparams[pos_key] = gp.compute_gp_corrections(
-            input_feature, output_pos[d, :], n_restarts_optimizer=n_restart_optimizer)
-        y_pos_static[d, :] = compute_static_correctons(input_feature, output_pos[d, :])
+            input_feature, output_pos[d, :], pos_kernel, n_restarts_optimizer=n_restart_optimizer)
+        y_pos_static[d, :] = compute_static_corrections(input_feature, output_pos[d, :])
 
     gp.hyperparameters_to_csv(
-        hyperparams, PROJECT_ROOT / "out/hyperparameters/python/all_hyperparameters.csv"
+        hyperparams, PROJECT_ROOT / f"out/hyperparameters/python/hyperparam_{config["trial_id"]}_f{config["local_reference_frame"]}.csv"
     )
 
     # # Regress test outputs with step time feature added

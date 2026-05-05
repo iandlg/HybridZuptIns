@@ -66,14 +66,9 @@ def compute_gp_corrections(
             kernel=kernel,
             normalize_y=True,
             n_restarts_optimizer=n_restarts_optimizer,
-            alpha=0.0
         )
         model.fit(x_train, y_train)
         y_testing_gp[testing_ind] = model.predict(x_test)
-
-        regression_rmse = np.sqrt(
-            np.mean((y[testing_ind] - y_testing_gp[testing_ind]) ** 2)
-        )
 
         if n_restarts_optimizer > 0 :
             batch_hyperparams = np.array([

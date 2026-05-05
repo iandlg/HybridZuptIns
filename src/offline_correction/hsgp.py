@@ -3,9 +3,10 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import List, Tuple, Optional, Sequence
-
+from typing import Sequence
 from sklearn.preprocessing import StandardScaler
+
+import src.online_correction.online_hsgp as online_hsgp
 
 type ArrayLike = NDArray | Sequence[float | int]
 
@@ -188,6 +189,82 @@ def compute_hsgp_corrections(
 
     return y_testing_GP
 
+def compute_sequential_hsgp_corrections(
+        x: NDArray[np.floating],
+        y: NDArray[np.floating],
+        m: int = 25,
+        ls: float | NDArray = 1.0,
+        sigma_f: float = 1.0,
+        sigma_n: float = 1.0,
+        margin: float = 1.8
+    ) -> NDArray:
+    """
+    Estimate output corrections using leave-one-fold-out Gaussian Process regression.
+
+    Performs 10-fold cross-validation, fitting a GP with an RBF + white noise
+    kernel on each fold. Also computes a static (mean) correction as a baseline.
+
+    Parameters
+    -------
+    x : NDArray[np.floating], shape (n_features, n_samples)
+        Input features, one column per sample.
+    y : NDArray[np.floating], shape (n_samples,)
+        Scalar target values to regress.
+
+    Returns
+    -------
+    y_testing_GP : NDArray[np.floating], shape (n_samples,)
+        GP-predicted corrections assembled across all folds.
+    y_testing_static : NDArray[np.floating], shape (n_samples,)
+        Static correction, equal to the global mean of y for all samples.
+    """
+    n_samples = x.shape[1]
+    n_dim = x.shape[0]
+    y_testing_GP = np.zeros(n_samples)
+    D = 10
+    
+    # Scale inputs to unit variance — critical for RBF length scale to be meaningful
+    scaler = StandardScaler()
+    x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
+
+    # L should cover the scaled domain with some margin
+    L = margin * np.abs(x_scaled).max(axis=0)   # (d,) — per-dimension, post-scaling
+    eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
+
+    for i in range(1, D + 1):
+        # --- indices --------------------------------------------------------
+        test_start = int(np.floor(n_samples / D * (i - 1)))
+        test_end   = int(np.floor(n_samples / D * i))
+
+        training_ind = list(range(0, test_start)) + list(range(test_end, n_samples))
+        testing_ind  = list(range(test_start, test_end))
+
+        # --- data -----------------------------------------------------------
+        x_train = x_scaled[training_ind,:]   # (n_train, n_features)
+        y_train = y[training_ind]        # (n_train, )
+        x_test  = x_scaled[testing_ind, :]    # (n_test,  n_features)
+
+        # --- fit + predict --------------------------------------------------
+        phi = calc_eigenvectors(x_train, L, eigvals)  # (n_train, m_star)
+        phi_star = calc_eigenvectors(x_test, L, eigvals) # (n_test, m_star)
+        omega = np.sqrt(eigvals)  # (m_star, d)
+        psd = power_spectral_density(omega, ls, n_dim, sigma_f)
+
+        mu_hist, P_hist = online_hsgp.sequential_fit(
+            mu_0=np.zeros((m,)),
+            P_0=np.diag(psd),
+            Phi=phi,
+            y=y_train,
+            sigma_n=sigma_n
+        )
+        print(mu_hist.shape)
+        print(mu_hist[-1,:].shape)
+
+
+        y_testing_GP[testing_ind] = phi_star @ mu_hist[-1, :]  # (n_test,)
+
+    return y_testing_GP
+
 
 if __name__ == "__main__" : 
     import src.zupt_ins.pipeline as pipeline
@@ -214,14 +291,14 @@ if __name__ == "__main__" :
     
     # Load hyperparameters from variability results
     hyperparameters = gp.hyperparameters_from_csv(
-        PROJECT_ROOT / "out/hyperparameters/python/fixed_hparam_variability_results.csv"
+        PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
     )
     
     # Apply static correction
-    y_yaw_static = batch_correction.compute_static_correctons(input_feature, output_yawdiff)
+    y_yaw_static = batch_correction.compute_static_corrections(input_feature, output_yawdiff)
     y_pos_static = np.empty(output_pos.shape)
     for d in range(3):
-        y_pos_static[d, :] = batch_correction.compute_static_correctons(input_feature, output_pos[d, :])
+        y_pos_static[d, :] = batch_correction.compute_static_corrections(input_feature, output_pos[d, :])
     static_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_static, y_pos_static, segs, FRAME)
 
     # Apply exact GP correction
@@ -245,11 +322,8 @@ if __name__ == "__main__" :
     gp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_gp, y_pos_gp, segs, FRAME)
 
     # Apply HSGP correction
-    m = 220
-    margin = 2
-
-    mean_step_size = np.mean(np.linalg.norm(input_feature, axis=0))
-    max_distance = np.max(np.linalg.norm(input_feature, axis=0))
+    m = 500
+    margin = 2.5
 
     y_yaw_hsgp = compute_hsgp_corrections(
         input_feature,
@@ -274,13 +348,38 @@ if __name__ == "__main__" :
 
     hsgp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_hsgp, y_pos_hsgp, segs, ref_frame=FRAME)
    
+    # Apply sequential HSGP correction
+    y_yaw_seq_hsgp = compute_sequential_hsgp_corrections(
+        input_feature,
+        output_yawdiff,
+        m = m,
+        ls = hyperparameters["yaw"][0,2],
+        sigma_f= hyperparameters["yaw"][0,1],
+        sigma_n= hyperparameters["yaw"][0,3],
+        margin=margin
+    )
+
+    y_pos_seq_hsgp = np.empty(output_pos.shape)
+    for d in range(3):
+        y_pos_seq_hsgp[d, :] = compute_sequential_hsgp_corrections(
+            input_feature, output_pos[d, :],
+            m = m,
+            ls = hyperparameters[f"pos_{d}"][0,2],
+            sigma_f= hyperparameters[f"pos_{d}"][0,1],
+            sigma_n= hyperparameters[f"pos_{d}"][0,3],
+            margin=margin
+        )
+
+    seq_hsgp_step_traj = batch_correction.apply_corrections(ins_traj_aligned, y_yaw_seq_hsgp, y_pos_seq_hsgp, segs, ref_frame=FRAME)
+
     isn_step_traj = ins_traj_aligned[segs]
     gt_step_traj = gt_traj_aligned[segs]
     trajs = {
         "model" : isn_step_traj,
         "model + static" : static_step_traj,
         "model + GP" : gp_step_traj,
-        "model + HSGP" : hsgp_step_traj
+        "model + HSGP" : hsgp_step_traj,
+        "model + seq HSGP" : seq_hsgp_step_traj
     }
     
     # Compute RMSE for each trajectory
