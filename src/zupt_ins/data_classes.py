@@ -101,11 +101,11 @@ class Trajectory(TimeSeries):
     t : NDArray[np.floating], shape (N,)
     pos : NDArray[np.floating], shape (3,N)
     R_nb : NDArray[np.floating], shape (3,3,N)
-    vel : Optional[np.floating], shape (3,N)
+    x : Optional[np.floating], shape (9,N)
     """
     pos: NDArray[np.floating]      # (3, N)   position in metres
     R_nb: NDArray[np.floating]        # (3, 3, N) rotation matrices
-    vel: Optional[NDArray[np.floating]] = None  # (3,N) velocity in m/s
+    vel: Optional[NDArray[np.floating]] = None
 
     @property
     def euler_nb(self) -> NDArray[np.floating]:
@@ -119,14 +119,17 @@ class Trajectory(TimeSeries):
             raise ValueError(f"pos must have shape (3, {N}), got {self.pos.shape}")
         if self.R_nb.shape != (3, 3, N):
             raise ValueError(f"R must have shape (3, 3, {N}), got {self.R_nb.shape}")
-        if self.vel is not None and self.vel.shape != (3, N):
-            raise ValueError(f"vel must have shape (3, {N}), got {self.vel.shape}")
+        
+        if self.vel is not None :
+            if self.vel.shape != (3,N):
+                raise ValueError(f"vel must be shape (3, {N}), got {self.vel.shape}")
 
     def __getitem__(self, index: Union[List[int], int, NDArray, slice]) -> "Trajectory":
         return Trajectory(
             t=self.t[index],
             pos=self.pos[:,index],
-            R_nb=self.R_nb[:,:,index]
+            R_nb=self.R_nb[:,:,index],
+            vel = self.vel[:,index] if self.vel is not None else None
         )
 
     @classmethod
@@ -210,18 +213,23 @@ class Trajectory(TimeSeries):
         t_gt  = self.t
         pos_gt = self.pos                        # (3, N)
         R_gt   = self.R_nb.transpose(2, 0, 1)       # (N, 3, 3)
+        vel_gt = self.vel
 
         # --- zero-order-hold extension on the left ---
         if inertial_t[0] < t_gt[0]:
             t_gt   = np.concatenate([[inertial_t[0]], t_gt])
             pos_gt = np.hstack([pos_gt[:, :1], pos_gt])
             R_gt   = np.concatenate([R_gt[:1], R_gt], axis=0)
+            if vel_gt is not None :
+                vel_gt = np.hstack([vel_gt[:, :1], vel_gt])
 
         # --- zero-order-hold extension on the right ---
         if inertial_t[-1] > t_gt[-1]:
             t_gt   = np.concatenate([t_gt, [inertial_t[-1]]])
             pos_gt = np.hstack([pos_gt, pos_gt[:, -1:]])
             R_gt   = np.concatenate([R_gt, R_gt[-1:]], axis=0)
+            if vel_gt is not None :
+                vel_gt = np.hstack([vel_gt, vel_gt[:, -1:]])
 
         # Interpolate position
         pos = np.vstack([
@@ -229,11 +237,19 @@ class Trajectory(TimeSeries):
             for i in range(3)
         ])
 
+        # Interpolate velocity if present
+        vel = None
+        if vel_gt is not None:
+            vel = np.vstack([
+                np.interp(inertial_t, t_gt, vel_gt[i])
+                for i in range(3)
+            ])
+
         # SLERP for rotations — (N, 3, 3) expected by Rotation
         slerp = Slerp(t_gt, Rotation.from_matrix(R_gt, assume_valid=False))
         R = slerp(inertial_t).as_matrix().transpose(1, 2, 0)  # back to (3, 3, N)
 
-        return Trajectory(t=inertial_t, pos=pos, R_nb=R)
+        return Trajectory(t=inertial_t, pos=pos, R_nb=R, vel=vel)
     
     def rmse(self, gt_traj: 'Trajectory') -> float:
         if self.is_compatible(self, gt_traj):

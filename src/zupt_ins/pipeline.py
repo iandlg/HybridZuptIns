@@ -4,8 +4,9 @@ import numpy as np
 
 from src.zupt_ins.initialization import INSConfig
 from src.zupt_ins.zupt_ins import smoothed_zupt_aided_ins
-from src.zupt_ins.data_classes import InertialData, ReferenceFrame, Trajectory, TimeSeries
+from src.zupt_ins.data_classes import InertialData, Trajectory, TimeSeries
 from src.zupt_ins.trajectory_transform import transform_position, transform_orientation
+import src.zupt_ins.orientation as orientation
 
 
 def compute_aligned_ins_trajectory(
@@ -50,10 +51,21 @@ def compute_aligned_ins_trajectory(
     gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
 
     # Compute INS trajectory from inertial data
-    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial_trunc, sim_config)
+    zupt, ins_traj, segs, x_end, quat_end = smoothed_zupt_aided_ins(inertial_trunc, sim_config)
+
+    # Truncate ground truth in case INS stopped early
+    gt_traj_aligned = gt_traj_aligned[:len(zupt)]
+    print(f"Length of zupt : {len(zupt)}")
+    print(f"Length of GT : {len(gt_traj_aligned)}")
+    print(f"Length of INS : {len(ins_traj)}")
 
     # Rigidly align position and orientation to ground truth
-    ins_traj_aligned = transform_position(ins_traj, gt_traj_aligned, zupt)
-    ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, orientation_offset)
-
-    return ins_traj_aligned, gt_traj_aligned, zupt, segs
+    ins_traj_aligned, R, t = transform_position(ins_traj, gt_traj_aligned, zupt, segs)
+    print(x_end.shape)
+    x_end[0:3] = (R @ x_end[0:3, None] + t).flatten()
+    x_end[3:6] = (R @ x_end[3:6, None]).flatten()
+    ins_traj_aligned, R = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, orientation_offset, segs)
+    rotated_attitude = R @ orientation.q2dcm(quat_end)
+    quat_end = orientation.dcm2q(rotated_attitude)
+    x_end[6:9] = orientation.matrix_to_euler(rotated_attitude)
+    return ins_traj_aligned, gt_traj_aligned, zupt, segs, x_end, quat_end

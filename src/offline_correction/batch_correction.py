@@ -55,15 +55,11 @@ def compute_training_io(
     if not TimeSeries.is_compatible(traj, traj_gt) :
         raise ValueError(f"TimeSeries must be compatible.")
 
-    inertial_euler = traj.euler_nb[:, step_seg] # (3,n_steps)
-    gt_euler = traj_gt.euler_nb[:, step_seg]    # (3,n_steps)
+    inertial_yaw = np.unwrap(traj.euler_nb[2, :]) # (n_inertial_samples, )
+    gt_yaw = np.unwrap(traj_gt.euler_nb[2, :])    # (n_inertial_samples, )
 
     # Compute yaw training output
-    output_yawdiff = np.diff(       # (n_steps - 1,)
-        np.unwrap(gt_euler[2,:])
-    ) - np.diff(
-        np.unwrap(inertial_euler[2,:])
-    )
+    output_yawdiff = np.diff(gt_yaw[step_seg]) - np.diff(inertial_yaw[step_seg]) # (n_steps - 1,)
     
     # Compute Step vectors in specified reference frame
     funs = {
@@ -191,7 +187,7 @@ if __name__ == "__main__" :
     opt_parameters = config["optimization_parameters"]
 
     # Compute INS trajectory
-    ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
+    ins_traj_aligned, gt_traj_aligned, zupt, segs, _, _ = pipeline.compute_aligned_ins_trajectory(
         data_path=data_path,
         trial_id=trial_id,
     )

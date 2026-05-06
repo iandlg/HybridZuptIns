@@ -16,6 +16,7 @@ def transform_position(
         ins_traj:Trajectory,
         gt_traj:Trajectory,
         zupt: NDArray[np.bool],
+        segs: List[int]
     ):
     """
     Applies a rigid transformation to the INS trajectory to match the ground truth reference frame.
@@ -36,7 +37,8 @@ def transform_position(
 
     # Last index to use for calibration: first point >3m from start.
     distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))
-    b = np.argmax(distances > _CALIBRATION_DISTANCE)
+    # b = np.argmax(distances > _CALIBRATION_DISTANCE)
+    b = segs[np.argmax(distances[segs] > _CALIBRATION_DISTANCE)] 
 
     # Calibration indices, excluding ZUPT frames.
     indices = np.array([i for i in range(0, b + 1) if not zupt[i]])
@@ -56,13 +58,13 @@ def transform_position(
     R = orientation.euler_to_matrix(np.array([np.pi, 0, x[0]]))
     t = x[1:4, np.newaxis]
 
-    ins_traj.pos[:3, :] = R @ ins_traj.pos[:3, :] + t
+    new_pos = R @ ins_traj.pos + t
+    new_vel = R @ ins_traj.vel if ins_traj.vel is not None else None
 
     # Rotate all orientation matrices.
-    for k in range(ins_traj.R_nb.shape[2]):
-        ins_traj.R_nb[:, :, k] = R @ ins_traj.R_nb[:, :, k]
+    new_R_nb = np.einsum('ij,jkl->ikl', R, ins_traj.R_nb)
 
-    return ins_traj
+    return Trajectory(t=ins_traj.t, pos=new_pos, R_nb=new_R_nb, vel=new_vel), R, t
 
 
 def euler_mse(
@@ -121,8 +123,9 @@ def transform_orientation(
         ins_traj: Trajectory,
         gt_traj: Trajectory,
         zupt: NDArray[np.bool],
-        initial_value: NDArray[np.floating]
-    ) -> Trajectory:
+        initial_value: NDArray[np.floating],
+        segs: List[int]
+    ) -> tuple[Trajectory, NDArray]:
     """
     Optimise the IMU orientation and temporal alignment against ground truth.
 
@@ -136,7 +139,10 @@ def transform_orientation(
 
     # Last calibration index: first point more than 3 m from the start.
     distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))
-    b = np.argmax(distances > _CALIBRATION_DISTANCE)
+    # b = np.argmax(distances > _CALIBRATION_DISTANCE)
+    b = segs[np.argmax(distances[segs] > _CALIBRATION_DISTANCE)]
+    print(f"First index farther than {_CALIBRATION_DISTANCE}m : {np.argmax(distances > _CALIBRATION_DISTANCE)}")
+    print(f"First index farther than {_CALIBRATION_DISTANCE}m and at step : {b}")
 
     # Calibration indices, excluding ZUPT frames.
     indices = np.array([i for i in range(a, b + 1) if not zupt[i]])
@@ -153,8 +159,9 @@ def transform_orientation(
     return Trajectory(
         t=ins_traj.t,
         pos=ins_traj.pos,
-        R_nb=new_ins_R
-    )
+        R_nb=new_ins_R,
+        vel=ins_traj.vel
+    ), R
 
 def _wrapped_min_residuals(ins_vals, gt_vals):
     """Minimum absolute residual across 0, +2π, -2π wrappings."""

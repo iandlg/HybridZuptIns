@@ -38,31 +38,14 @@ class StepDetector:
 def smoothed_zupt_aided_ins(
         inertial: InertialData,
         simdata: INSConfig,
-        online_corrector: Any = None
-    ) -> Tuple[NDArray, Trajectory, List[int]]:
+    ) -> Tuple[NDArray, Trajectory, List[int], NDArray, NDArray]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
 
     Parameters
     ----------
-    inertial : dict
-        Dictionary containing:
-            - 'u'    : ndarray, shape (6, N), IMU data matrix.
-            - 'zupt' : ndarray, shape (N,), zero-velocity decisions (bool).
-    simdata : object or dict
-        Settings containing:
-            - sigma_initial_pos : array_like, shape (3,)
-            - sigma_initial_vel : array_like, shape (3,)
-            - sigma_initial_att : array_like, shape (3,)
-            - sigma_acc         : array_like, shape (3,)
-            - sigma_gyro        : array_like, shape (3,)
-            - sigma_vel         : array_like, shape (3,)
-            - init_heading      : float
-            - init_pos          : array_like, shape (3,)
-    Ts : float
-        Sampling time (seconds).
-    g : float
-        Gravitational acceleration (m/s^2).
+    inertial : InertialData,
+    simdata : INSConfig
 
     Returns
     -------
@@ -179,7 +162,8 @@ def smoothed_zupt_aided_ins(
         zupt_ins_trajectory = Trajectory(
             t = inertial.t,
             pos = x[0:3, :],
-            R_nb = orientation.euler_to_matrix(x[6:9, :])
+            R_nb = orientation.euler_to_matrix(x[6:9, :]),
+            vel = x[3:6, :]
         )
 
         # ------------------------------------------------------------------ #
@@ -189,13 +173,22 @@ def smoothed_zupt_aided_ins(
         P[0:2, 8, seg_end]    = 0.0
         P[8, 0:2, seg_end]    = 0.0
 
+        if np.sqrt(np.sum((
+                zupt_ins_trajectory.pos[:, 0:1] - zupt_ins_trajectory.pos[:, step_seg[-1]]
+            ) ** 2, axis=0))[0] > simdata.maximum_distance_m :
+            zupt_ins_trajectory = zupt_ins_trajectory[:step_seg[-1]+1]
+            zupt = zupt[:step_seg[-1]+1]
+            break
+
         if seg_end != N - 1:
             seg_start = seg_end + 1
             seg_end   = N - 1
         else:
             break
 
-    return zupt, zupt_ins_trajectory, step_seg
+    quat_out = quat[:,step_seg[-1]]
+    x_out = x[:, step_seg[-1]]    
+    return zupt, zupt_ins_trajectory, step_seg, x_out, quat_out
 
 def initialize_nav(u:NDArray, init_heading: float, init_pos: NDArray)->Tuple[NDArray,NDArray]:
     """
@@ -533,9 +526,11 @@ def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tu
     # ------------------------------------------------------------------ #
     Rb2t = orientation.q2dcm(q)
 
-    y[6] = np.arctan2(Rb2t[2, 1], Rb2t[2, 2])                                      # roll
-    y[7] = np.arctan2(-Rb2t[2, 0], np.sqrt(Rb2t[2, 1]**2 + Rb2t[2, 2]**2))        # pitch
-    y[8] = np.arctan2(Rb2t[1, 0], Rb2t[0, 0])                                      # yaw
+    # y[6] = np.arctan2(Rb2t[2, 1], Rb2t[2, 2])                                      # roll
+    # y[7] = np.arctan2(-Rb2t[2, 0], np.sqrt(Rb2t[2, 1]**2 + Rb2t[2, 2]**2))        # pitch
+    # y[8] = np.arctan2(Rb2t[1, 0], Rb2t[0, 0])                                      # yaw
+
+    y[6:9] = orientation.matrix_to_euler(Rb2t)
 
     # ------------------------------------------------------------------ #
     # Update position and velocity
@@ -563,7 +558,7 @@ if __name__ == "__main__":
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     simdata = INSConfig(segmentation_thrsld=0.03)
     
-    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial, simdata)
+    zupt, ins_traj, segs, _, _ = smoothed_zupt_aided_ins(inertial, simdata)
 
     # import matplotlib.pyplot as plt
     # fig, ax = plt.subplots()

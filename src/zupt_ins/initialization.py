@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
-from typing import Optional
-
 
 
 @dataclass(frozen=True)
@@ -79,6 +77,9 @@ class INSConfig:
 
     # ZUPT aided INS - segmentation decision
     segmentation_thrsld: float = 0.1e-3 #  0.1e-3 0.03
+
+    # Maximum distance from origin
+    maximum_distance_m: float = np.inf
 
     def __post_init__(self):
         if self.g is None:
