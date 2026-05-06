@@ -7,6 +7,11 @@
         "feature_dim": 3,
         "m": 200,
         "feature_standard_deviation": 1.0,
-        "feature_mean": 0.0
+        "feature_mean": 0.0,
+        "domain": [
+            5.97181138,
+            16.50837845,
+            12.39124099
+        ]
     }
 }

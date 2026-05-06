@@ -3,8 +3,9 @@ PROJECT_ROOT = rootutils.setup_root(__file__, dotenv=True, pythonpath=True, cwd=
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import Sequence, Any, Tuple, Dict
+from typing import Sequence, Tuple, Dict, List
 from dataclasses import dataclass
+from enum import Enum
 
 import src.offline_correction.hsgp as hsgp
 import src.online_correction.kalman_filter as kf
@@ -17,21 +18,32 @@ from src.zupt_ins.zupt_ins import (
 )
 import src.zupt_ins.orientation as orientation
 
+class LiPGPtype(Enum) : 
+    HSGP = 1
+    WENDLAND = 2
+
 @dataclass
-class GPparameters :
+class LiPGPparameters :
     hyperparameters: Dict[str, NDArray] # contains the hyperparameters for each output type ("yaw", "pos_0" ...)
     feature_dim: int
     m : int
-    feature_std: float = 1.0
-    feature_mean: float = 0.0
+    feature_std: float
+    feature_mean: float
 
+@dataclass
+class HSGPparameters(LiPGPparameters):
+    LL: Sequence[float]
+
+GP_PARAM_CLASS = {
+    LiPGPtype.HSGP : HSGPparameters
+}
 
 def hybrid_zupt_aided_ins(
         inertial: InertialData,
         simdata: INSConfig,
         gt_traj: Trajectory,
-        gp_params : GPparameters
-    ) -> Tuple[NDArray, Trajectory, Sequence[int]]:
+        gp_params : HSGPparameters
+    ) -> Tuple[NDArray, Trajectory, Sequence[int], List[NDArray]]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
 
@@ -86,8 +98,21 @@ def hybrid_zupt_aided_ins(
     x[:, 0], quat[:, 0] = initialize_nav(u, simdata.init_heading, simdata.init_pos_array)
 
     # Initialize HSGP
-    beta = np.zeros(())
-    P_beta = np.zeros()
+    eigvals = hsgp.calc_eigenvalues(gp_params.LL, gp_params.m, gp_params.feature_dim)
+    outputs = ["yaw", "pos_0", "pos_1", "pos_2"]
+    psd = {
+        outpt : hsgp.power_spectral_density(
+            np.sqrt(eigvals),
+            gp_params.hyperparameters[outpt][0,2],
+            gp_params.feature_dim,
+            sigma_f=gp_params.hyperparameters[outpt][0,1]
+        ) for outpt in outputs
+    }
+    beta = {outpt : np.zeros((gp_params.m, )) for outpt in outputs}
+    P_beta = {outpt : np.diag(psd[outpt]) for outpt in outputs}
+
+    gt_available = [True]*N
+    y_train = []
 
     # Segment bookkeeping
     seg_start = 1
@@ -156,10 +181,48 @@ def hybrid_zupt_aided_ins(
         x[:,seg_start:seg_end+1], quat[:,seg_start:seg_end+1] = compensate_internal_states(
             x[:, seg_start:seg_end+1], -dx_smooth[:, seg_start:seg_end+1], quat[:, seg_start:seg_end+1]
         )
+        R_nb = orientation.euler_to_matrix(x[6:9, :])
 
         # ------------------------------------------------------------------ #
-        # GP correction
+        # GP update
         # ------------------------------------------------------------------ #
+        if len(step_seg) > 1 :
+            last_step = step_seg[-2]
+            curr_step = step_seg[-1]
+            # print(f"{last_step = }; {curr_step = }")
+            # print(f"{seg_start = }; {seg_end = }")
+
+            if gt_available[last_step] and gt_available[curr_step]:
+                
+                R_nb_ins = R_nb[:,:, [last_step, curr_step]]
+                R_nb_gt = gt_traj.R_nb[:,:, [last_step, curr_step]]
+
+                pos_ins = x[0:3, [last_step, curr_step]]
+                pos_gt = gt_traj.pos[0:3, [last_step, curr_step]]
+
+                ins_step = R_nb_ins[:,:,0].T @ (pos_ins[:,1] - pos_ins[:,0])
+                gt_step = R_nb_gt[:,:,0].T @ (pos_gt[:,1] - pos_gt[:,0])
+                
+                y_pos = gt_step - ins_step
+
+                euler_ins = orientation.matrix_to_euler(R_nb_ins)
+                euler_gt = orientation.matrix_to_euler(R_nb_gt)
+
+                y_yaw = np.diff(np.unwrap(euler_gt[2,:])) - np.diff(np.unwrap(euler_ins[2,:]))
+
+                y = np.concatenate((y_yaw, y_pos))
+                y_train.append(y)
+
+                input_feature = (
+                    (ins_step - gp_params.feature_mean) / gp_params.feature_std
+                ).reshape(-1, gp_params.feature_dim)
+                
+                eigvect = hsgp.calc_eigenvectors(input_feature, gp_params.LL, eigvals)
+
+                for idx, outpt in enumerate(outputs) :
+                        beta[outpt], P_beta[outpt] = kf.measurement_update(
+                            beta[outpt], P_beta[outpt], y[idx], eigvect, gp_params.hyperparameters[outpt][0,3]
+                        )
 
 
 
@@ -167,7 +230,7 @@ def hybrid_zupt_aided_ins(
         zupt_ins_trajectory = Trajectory(
             t = inertial.t,
             pos = x[0:3, :],
-            R_nb = orientation.euler_to_matrix(x[6:9, :])
+            R_nb = R_nb
         )
 
         # ------------------------------------------------------------------ #
@@ -183,7 +246,7 @@ def hybrid_zupt_aided_ins(
         else:
             break
 
-    return zupt, zupt_ins_trajectory, step_seg
+    return zupt, zupt_ins_trajectory, step_seg, y_train
 
 
 
@@ -192,24 +255,27 @@ if __name__ == "__main__":
     from src.zupt_ins.data_classes import TimeSeries
     from src.config.results_io import ResultsSaver
     from src.offline_correction.gp import hyperparameters_from_csv
+    import matplotlib.pyplot as plt
+    import src.plotting.plot_corrections as plot_corr
 
     config = ResultsSaver.load_json(
         PROJECT_ROOT / "src/config/online_correction_configs/hybrid_zins.json"
     )
 
     # Load hyperparameters from variability results
-    hyperparameters = hyperparameters_from_csv(PROJECT_ROOT / config["hyperparameter_path"])
+    hyperparameters = hyperparameters_from_csv(PROJECT_ROOT / config["gp_parameters"]["hyperparameter_path"])
 
     data_path = PROJECT_ROOT / config["data_path"]
     trial_id = config["trial_id"]
     sim_config = INSConfig()
 
-    gp_config = GPparameters(
+    gp_config = HSGPparameters(
         hyperparameters=hyperparameters,
         m=config["gp_parameters"]["m"],
-        feature_dim=config["gp_parameters"]["feature_mean"],
+        feature_dim=config["gp_parameters"]["feature_dim"],
         feature_mean=config["gp_parameters"]["feature_mean"],
-        feature_std=config["gp_parameters"]["feature_standard_deviation"]
+        feature_std=config["gp_parameters"]["feature_standard_deviation"],
+        LL=config["gp_parameters"]["domain"]
     )
 
     # Load data
@@ -221,10 +287,16 @@ if __name__ == "__main__":
     gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
 
     # Compute INS trajectory from inertial data
-    zupt, ins_traj, segs = hybrid_zupt_aided_ins(
+    zupt, ins_traj, segs, y_train = hybrid_zupt_aided_ins(
         inertial_trunc,
         sim_config,
         gt_traj_aligned,
         gp_config,
     )
+    y_train = np.asarray(y_train).T
+
+    plot_corr.plot_regression_results(
+        y_train[0,:], None, None, y_train[1:4,:], None, None
+    )
+    plt.show()
     

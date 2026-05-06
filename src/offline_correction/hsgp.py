@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from typing import Sequence
 from sklearn.preprocessing import StandardScaler
 
-import src.online_correction.online_hsgp as online_hsgp
+import src.online_correction.sequential_fit as sequential_fit
 
 type ArrayLike = NDArray | Sequence[float | int]
 
@@ -144,12 +144,14 @@ def compute_hsgp_corrections(
     y_testing_GP = np.zeros(n_samples)
     D = 10
     
-    # Scale inputs to unit variance — critical for RBF length scale to be meaningful
-    scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(x.T)  # (n_samples, n_features)
+    # Scale inputs to unit variance
+    x_std = np.std(x.T, axis=0)
+    x_mean = np.mean(x.T, axis=0)
+    x_scaled = (x.T - x_mean) / x_std
 
     # L should cover the scaled domain with some margin
     L = margin * np.abs(x_scaled).max(axis=0)   # (d,) — per-dimension, post-scaling
+    print(L)
     eigvals = calc_eigenvalues(L, m, n_dim)  # type: ignore # (m_start, d)
 
     for i in range(1, D + 1):
@@ -250,16 +252,13 @@ def compute_sequential_hsgp_corrections(
         omega = np.sqrt(eigvals)  # (m_star, d)
         psd = power_spectral_density(omega, ls, n_dim, sigma_f)
 
-        mu_hist, P_hist = online_hsgp.sequential_fit(
+        mu_hist, P_hist = sequential_fit.sequential_fit(
             mu_0=np.zeros((m,)),
             P_0=np.diag(psd),
             Phi=phi,
             y=y_train,
             sigma_n=sigma_n
         )
-        print(mu_hist.shape)
-        print(mu_hist[-1,:].shape)
-
 
         y_testing_GP[testing_ind] = phi_star @ mu_hist[-1, :]  # (n_test,)
 
