@@ -288,7 +288,7 @@ if __name__ == "__main__":
         LL=config["gp_parameters"]["domain"]
     )
 
-    ins_starttraj_aligned, gt_starttraj_aligned, _, start_segs, x_end, quat_end = pipeline.compute_aligned_ins_trajectory(
+    ins_starttraj_aligned, gt_starttraj_aligned, _, start_segs, x_end, quat_end, R = pipeline.compute_aligned_ins_trajectory(
         data_path, trial_id, sim_config
     )
 
@@ -304,6 +304,15 @@ if __name__ == "__main__":
     # Load full datasets
     inertial = InertialData.from_csv_int(data_path, trial_id)
     gt_traj = Trajectory.from_csv_int(data_path, trial_id)
+
+    # Rotated intertial data
+    new_a = R @ inertial.u[0:3,:]
+    new_w = R @ inertial.u[3:6, :]
+    new_u = np.vstack([new_a, new_w])
+    inertial = InertialData(
+        inertial.t,
+        u = new_u
+    )
 
     print(f"Average GT sample time : {np.mean(np.diff(gt_traj.t)):.2f} +- {np.std(np.diff(gt_traj.t)):.2f}")
     print(f"Average IMU sample time : {np.mean(np.diff(inertial.t)):.2f} +- {np.std(np.diff(inertial.t)):.2f}")

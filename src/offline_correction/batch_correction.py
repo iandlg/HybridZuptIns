@@ -187,7 +187,7 @@ if __name__ == "__main__" :
     opt_parameters = config["optimization_parameters"]
 
     # Compute INS trajectory
-    ins_traj_aligned, gt_traj_aligned, zupt, segs, _, _ = pipeline.compute_aligned_ins_trajectory(
+    ins_traj_aligned, gt_traj_aligned, zupt, segs, _, _, _ = pipeline.compute_aligned_ins_trajectory(
         data_path=data_path,
         trial_id=trial_id,
     )

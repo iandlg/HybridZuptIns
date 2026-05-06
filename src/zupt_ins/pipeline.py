@@ -64,8 +64,9 @@ def compute_aligned_ins_trajectory(
     print(x_end.shape)
     x_end[0:3] = (R @ x_end[0:3, None] + t).flatten()
     x_end[3:6] = (R @ x_end[3:6, None]).flatten()
-    ins_traj_aligned, R = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, orientation_offset, segs)
-    rotated_attitude = R @ orientation.q2dcm(quat_end)
+    ins_traj_aligned, R_ori = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, orientation_offset, segs)
+    rotated_attitude =  orientation.q2dcm(quat_end) @ R_ori
     quat_end = orientation.dcm2q(rotated_attitude)
     x_end[6:9] = orientation.matrix_to_euler(rotated_attitude)
-    return ins_traj_aligned, gt_traj_aligned, zupt, segs, x_end, quat_end
+
+    return ins_traj_aligned, gt_traj_aligned, zupt, segs, x_end, quat_end, R
