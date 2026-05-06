@@ -308,10 +308,9 @@ if __name__ == "__main__":
     # Rotated intertial data
     new_a = R @ inertial.u[0:3,:]
     new_w = R @ inertial.u[3:6, :]
-    new_u = np.vstack([new_a, new_w])
     inertial = InertialData(
         inertial.t,
-        u = new_u
+        u = np.vstack([new_a, new_w])
     )
 
     print(f"Average GT sample time : {np.mean(np.diff(gt_traj.t)):.2f} +- {np.std(np.diff(gt_traj.t)):.2f}")
@@ -321,17 +320,6 @@ if __name__ == "__main__":
     inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
     gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
 
-    # Compute initial state from the calibrated INS trajectory
-    if ins_starttraj_aligned.vel is None : 
-        raise ValueError("Full state information is needed.")
-    
-    x_init = np.concatenate([
-        ins_starttraj_aligned.pos[:, -1],
-        ins_starttraj_aligned.vel[:,-1],
-        orientation.matrix_to_euler(ins_starttraj_aligned.R_nb[:,:,-1])
-    ])
-
-    print(f"x init : {x_init}")
     sim_config = INSConfig()
 
     # Truncate data to start after the previous cutoff
@@ -345,7 +333,7 @@ if __name__ == "__main__":
         gt_traj=gt_traj_aligned,
         gp_params=gp_config,
         x_init=x_end,
-
+        quat_init=quat_end
     )
     y_train = np.asarray(y_train).T
 
