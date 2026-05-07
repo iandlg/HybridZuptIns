@@ -38,7 +38,8 @@ def detector(u: NDArray, simdata: INSConfig) -> Tuple[NDArray, NDArray]:
     W = simdata.window_size
 
     zupt = np.zeros(N, dtype=bool)
-    T = _glrt(u, W, simdata.g, simdata.sigma_a, simdata.sigma_g)
+    g = float(np.linalg.norm(simdata.g))
+    T = _glrt(u, W, g, simdata.sigma_a, simdata.sigma_g)
 
     # Mark windows where test statistic is below threshold as zero velocity
     for k in range(len(T)):

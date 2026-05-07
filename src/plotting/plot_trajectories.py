@@ -98,7 +98,7 @@ def plot_position_rmse(
             np.cumsum(np.sum((traj.pos[:2, :n] - gt_traj.pos[:2, :n]) ** 2, axis=0))
             / np.arange(1, n + 1)
         )
-        ax.plot(traj.t[:n], rmse, label=getattr(traj, 'name', f'{key}'))
+        ax.plot(traj.t[:n], rmse, label=getattr(traj, 'name', f'{key}, final RMSE : {rmse[-1]:.3f}'))
 
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('RMSE (m)')
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     # Load data
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     gt_traj = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    simdata = INSConfig(segmentation_thrsld=0.03)
+    simdata = INSConfig()
 
     # Data preprocessing to fit gt to imu data
     inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
@@ -172,9 +172,16 @@ if __name__ == "__main__":
     # Compute trajectory from inertial data
     zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial_trunc, simdata)
 
+    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))[segs]
+    b = segs[np.argmax(distances > 3)]
+
+    # Calibration indices, excluding ZUPT frames.
+    calib_idxs = np.array([i for i in range(0, b + 1) if not zupt[i]])
+
+
     # Rigidly transform the positions and orientations of the computed trajectory
-    ins_traj_aligned = transform_position(ins_traj, gt_traj_aligned, zupt)
-    ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3))
+    ins_traj_aligned, _, _ = transform_position(ins_traj, gt_traj_aligned, calib_idxs)
+    ins_traj_aligned, _ = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3), calib_idxs)
 
     plot_groundtruth_vs_inertial_positions(ins_traj_aligned[:1000], gt_traj_aligned[:1000])
     plot_groundtruth_vs_inertial_orientations(ins_traj_aligned[:], gt_traj_aligned[:])

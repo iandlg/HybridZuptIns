@@ -16,13 +16,42 @@ import src.offline_correction.batch_correction as correction
 import src.offline_correction.gp as gp
 from src.zupt_ins.data_classes import Trajectory, ReferenceFrame
 
+def _save_fold_hyperparams(
+        fold_idx: int,
+        hyperparams: Dict[str, NDArray],
+        rmse_per_fold: NDArray,
+        output_file: Optional[Path]
+    ) -> None:
+    if output_file is None:
+        return
+    
+    records = []
+    for key in ["yaw", "pos_0", "pos_1", "pos_2"]:
+        row = hyperparams[key][fold_idx]  # [log_ml, sigma_f, length_scale, sigma_n]
+        records.append({
+            "output_type": key,
+            "fold":        fold_idx + 1,
+            "log_marginal_likelihood":      row[0],
+            "sigma_f":     row[1],
+            "length_scale": row[2],
+            "sigma_n":     row[3],
+            "rmse":        rmse_per_fold[fold_idx],
+        })
+    
+    output_df = pl.DataFrame(records)
+    if not output_file.parent.exists():
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_df.write_csv(output_file)
+
+
 def evaluate_hyperparameter_variability(
     ins_traj_aligned: Trajectory,
     gt_traj_aligned: Trajectory,
     segs: List[int],
     hyperparams: Dict[str, NDArray],
     ref_frame: ReferenceFrame = ReferenceFrame.BODY,
-    output_filename: Optional[Path] = None
+    output_filename: Optional[Path] = None,
+    output_filename_non_outlier: Optional[Path] = None
 ) -> Tuple[NDArray, List[Trajectory]]:
     """
     For each of the 10 cross-validation hyperparameter sets, fix the GP kernel,
@@ -43,6 +72,10 @@ def evaluate_hyperparameter_variability(
         matching the output of ``compute_corrections``.
     ref_frame : ReferenceFrame
         Reference frame used to express step vectors (default: body frame).
+    output_filename : Optional[Path]
+        File path to save the fold with lowest RMSE.
+    output_filename_non_outlier : Optional[Path]
+        File path to save the fold with lowest RMSE that is not an outlier.
 
     Returns
     -------
@@ -59,13 +92,12 @@ def evaluate_hyperparameter_variability(
     n_folds = hyperparams["yaw"].shape[0]           # 10
     rmse_per_fold = np.empty(n_folds)
     corrected_trajs: List[Trajectory] = []
-    min_rmse = np.inf
-    output_df = None
 
     gt_step_traj = gt_traj_aligned[segs]
 
+    # Compute RMSE for all folds first
     for fold_idx in range(n_folds):
-        # ── build fixed kernels from this fold's hyperparameters ─────────────
+        # Build fixed kernels from this fold's hyperparameters
         # hyperparams[key][fold_idx] = [log_ml, sigma_f, length_scale, sigma_n]
         # set_fixed_kernel expects [sigma_f, length_scale, sigma_n]
         def _hp(key: str) -> NDArray:
@@ -75,7 +107,7 @@ def evaluate_hyperparameter_variability(
         kernel_yaw   = gp.set_fixed_kernel(_hp("yaw"))
         kernels_pos  = [gp.set_fixed_kernel(_hp(f"pos_{d}")) for d in range(3)]
 
-        # ── GP predictions with the fixed kernel (no re-fitting) ─────────────
+        # GP predictions with the fixed kernel (no re-fitting)
         y_yaw_GP, _ = gp.compute_gp_corrections(
             input_feature, output_yawdiff, kernel=kernel_yaw, n_restarts_optimizer=0
         )
@@ -86,37 +118,37 @@ def evaluate_hyperparameter_variability(
                 input_feature, output_pos[d], kernel=kernels_pos[d], n_restarts_optimizer=0
             )
 
-        # ── apply corrections and build step-level corrected trajectory ───────
+        # Apply corrections and build step-level corrected trajectory
         gp_traj = correction.apply_corrections(
             ins_traj_aligned, y_yaw_GP, y_pos_GP, segs, ref_frame=ref_frame
         )
         corrected_trajs.append(gp_traj)
 
-        # ── 2-D horizontal RMSE against ground truth ─────────────────────────
+        # 2-D horizontal RMSE against ground truth
         rmse_per_fold[fold_idx] = gp_traj.rmse(gt_step_traj)
 
-        # Save the hyperparameters with the best performance
-        if rmse_per_fold[fold_idx] < min_rmse :
-            records = []
-            for key in ["yaw", "pos_0", "pos_1", "pos_2"]:
-                row = hyperparams[key][fold_idx]  # [log_ml, sigma_f, length_scale, sigma_n]
-                records.append({
-                    "output_type": key,
-                    "fold":        fold_idx + 1,
-                    "log_marginal_likelihood":      row[0],
-                    "sigma_f":     row[1],
-                    "length_scale": row[2],
-                    "sigma_n":     row[3],
-                    "rmse":        rmse_per_fold[fold_idx],
-                })
-            min_rmse = rmse_per_fold[fold_idx]
-            output_df = pl.DataFrame(records)
+    # Identify outliers using IQR method
+    q1 = np.percentile(rmse_per_fold, 25)
+    q3 = np.percentile(rmse_per_fold, 75)
+    iqr = q3 - q1
+    lower_bound = q1 - 1.5 * iqr
+    upper_bound = q3 + 1.5 * iqr
+    is_outlier = (rmse_per_fold < lower_bound) | (rmse_per_fold > upper_bound)
 
-    if output_filename is not None and output_df is not None :
-        if not output_filename.parent.exists():
-            output_filename.parent.mkdir()
-        output_df.write_csv(output_filename)
+    # Find best fold (lowest RMSE overall)
+    best_fold_idx = int(np.argmin(rmse_per_fold))
+    
+    # Find best non-outlier fold (lowest RMSE among non-outliers)
+    non_outlier_indices = np.where(~is_outlier)[0]
+    if len(non_outlier_indices) > 0:
+        best_non_outlier_idx = int(non_outlier_indices[np.argmin(rmse_per_fold[non_outlier_indices])])
+    else:
+        # If all folds are outliers, use the best fold overall
+        best_non_outlier_idx = int(best_fold_idx)
 
+    # Save hyperparameters for both folds
+    _save_fold_hyperparams(best_fold_idx, hyperparams, rmse_per_fold, output_filename)
+    _save_fold_hyperparams(best_non_outlier_idx, hyperparams, rmse_per_fold, output_filename_non_outlier)
 
     return rmse_per_fold, corrected_trajs
 

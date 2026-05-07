@@ -187,7 +187,7 @@ if __name__ == "__main__" :
     opt_parameters = config["optimization_parameters"]
 
     # Compute INS trajectory
-    ins_traj_aligned, gt_traj_aligned, zupt, segs, _, _, _, _ = pipeline.compute_aligned_ins_trajectory(
+    ins_traj_aligned, gt_traj_aligned, zupt, segs, _, _ = pipeline.compute_aligned_ins_trajectory(
         data_path=data_path,
         trial_id=trial_id,
     )
@@ -294,7 +294,8 @@ if __name__ == "__main__" :
 
     rmse_per_fold, corrected_trajs = variability.evaluate_hyperparameter_variability(
         ins_traj_aligned, gt_traj_aligned, segs, hyperparams, ref_frame=FRAME,
-        output_filename= PROJECT_ROOT / "out/hyperparameters/python/hparam_variability_results.csv"
+        output_filename= PROJECT_ROOT / "out/hyperparameters/python/hparam_var_res.csv",
+        output_filename_non_outlier= PROJECT_ROOT / "out/hyperparameters/python/hparam_nnoutlier_var_res.csv",
     )
 
     plot_corr.plot_regression_results(

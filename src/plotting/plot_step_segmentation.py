@@ -161,27 +161,18 @@ if __name__ == "__main__":
     from src.zupt_ins.zupt_ins import smoothed_zupt_aided_ins
     from src.zupt_ins.data_classes import TimeSeries
     from src.zupt_ins.trajectory_transform import transform_position, transform_orientation
-
-    # Load data
-    inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
-    gt_traj = Trajectory.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
+    from src.zupt_ins.pipeline import compute_aligned_ins_trajectory
+    data_path = PROJECT_ROOT / "data/angermann_high_precision"
+    trial_id = 15
     simdata = INSConfig()
 
-    # Data preprocessing to fit gt to imu data
-    inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
-    gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
-
-    # Compute trajectory from inertial data
-    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial_trunc, simdata)
-
-    # Rigidly transform the positions and orientations of the computed trajectory
-    ins_traj_aligned = transform_position(ins_traj, gt_traj_aligned, zupt)
-    ins_traj_aligned = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, np.zeros(3))
+    ins_traj_aligned, gt_traj_aligned, zupt, segs, inertial, _ = compute_aligned_ins_trajectory(
+        data_path, trial_id, simdata
+    )
 
     # Plot 
-    plot_inertialdata_and_stepsegm(inertial_trunc, segs)
+    plot_inertialdata_and_stepsegm(inertial, segs)
     plot_step_lengths(ins_traj_aligned, gt_traj_aligned, segs)
-
 
     # Plot steps in body frame 
     steps_ins_b = ins_traj_aligned.step_vectors_body(segs)

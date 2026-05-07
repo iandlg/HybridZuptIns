@@ -38,15 +38,12 @@ GP_PARAM_CLASS = {
     LiPGPtype.HSGP : HSGPparameters
 }
 
-def hybrid_zupt_aided_ins(
+def hybrid_nominal_zupt_aided_ins(
         inertial: InertialData,
         simdata: INSConfig,
         gt_traj: Trajectory,
         gp_params : HSGPparameters,
         x_init: NDArray = np.zeros(9),
-        quat_init: NDArray = orientation.dcm2q(np.eye(3)),
-        R_nprime_n: NDArray = np.eye(3),
-        R_b_bprime: NDArray = np.eye(3)
     ) -> Tuple[NDArray, Trajectory, Sequence[int], List[NDArray], List]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
@@ -63,7 +60,7 @@ def hybrid_zupt_aided_ins(
     """
     u = inertial.u
     Ts = simdata.Ts
-    g = simdata.g
+    g = np.array([0,0,simdata.g], dtype=float) if isinstance(simdata.g, float) else simdata.g
 
     # Check the ground truth is aligned with the inertial timesteps
     if not TimeSeries.is_compatible(inertial, gt_traj):
@@ -100,7 +97,9 @@ def hybrid_zupt_aided_ins(
 
     # Initialise navigation state
     x[:, 0] = x_init
-    quat[:, 0] = quat_init
+    quat[:, 0] = orientation.dcm2q(
+        orientation.euler_to_matrix(x_init[6:9])
+    )
 
     # Initialize HSGP
     eigvals = hsgp.calc_eigenvalues(gp_params.LL, gp_params.m, gp_params.feature_dim)
@@ -116,7 +115,9 @@ def hybrid_zupt_aided_ins(
     beta = {outpt : np.zeros((gp_params.m, )) for outpt in outputs}
     P_beta = {outpt : np.diag(psd[outpt]) for outpt in outputs}
 
-    gt_available = [True]*N
+    train_percent = 0.4
+    gt_available = [True]*(int(train_percent * N) + 1)
+    gt_available.extend([False]*(int((1-train_percent)* N)))
     y_train = []
     ins_yaw_unwrapped = [0]
 
@@ -136,7 +137,7 @@ def hybrid_zupt_aided_ins(
 
             # Time update -------------------------------------------------- #
             x[:, n], quat[:, n] = navigation_equations(
-                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g, R_nprime_n, R_b_bprime
+                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g # type: ignore
             )
             
             F[:, :, n], G = state_matrix(quat[:, n], u[:, n], Ts)
@@ -160,7 +161,7 @@ def hybrid_zupt_aided_ins(
             # # Segmentation decision ---------------------------------------- #
             detected = step_detector(n, zupt[n])
             if detected is not None:
-                step_seg.append(detected)
+                step_seg.append(n)
                 seg_end = n
                 break
             
@@ -193,49 +194,64 @@ def hybrid_zupt_aided_ins(
         # GP update
         # ------------------------------------------------------------------ #
         if len(step_seg) > 1 :
-            last_step = step_seg[-2]
-            curr_step = step_seg[-1]
             # print(f"{last_step = }; {curr_step = }")
             # print(f"{seg_start = }; {seg_end = }")
+            R_nb_ins = R_nb[:,:, seg_start:seg_end+1]
+            pos_ins = x[0:3, [seg_start, seg_end]]
+            ins_step = R_nb_ins[:,:,0].T @ (pos_ins[:,1] - pos_ins[:,0])
+            euler_ins = orientation.matrix_to_euler(R_nb_ins)
+            unwrapped_yaw_seg_ins = np.unwrap(euler_ins[2,:])[[0,-1]]
+            unwrapped_yaw_diff = unwrapped_yaw_seg_ins[1] - unwrapped_yaw_seg_ins[0]
 
-            if gt_available[last_step] and gt_available[curr_step]:
-                
-                R_nb_ins = R_nb[:,:, last_step:curr_step+1]
-                R_nb_gt = gt_traj.R_nb[:,:, last_step:curr_step+1]
+            input_feature = (
+                (ins_step - gp_params.feature_mean) / gp_params.feature_std
+            ).reshape(-1, gp_params.feature_dim)
 
-                pos_ins = x[0:3, [last_step, curr_step]]
-                pos_gt = gt_traj.pos[0:3, [last_step, curr_step]]
+            eigvect = hsgp.calc_eigenvectors(input_feature, gp_params.LL, eigvals)
 
-                ins_step = R_nb_ins[:,:,0].T @ (pos_ins[:,1] - pos_ins[:,0])
+            if True : # gt_available[seg_start] and gt_available[seg_end]
+                R_nb_gt = gt_traj.R_nb[:,:, seg_start:seg_end+1]
+                pos_gt = gt_traj.pos[0:3, [seg_start, seg_end]]
                 gt_step = R_nb_gt[:,:,0].T @ (pos_gt[:,1] - pos_gt[:,0])
                 
                 y_pos = gt_step - ins_step
 
-                euler_ins = orientation.matrix_to_euler(R_nb_ins)
                 euler_gt = orientation.matrix_to_euler(R_nb_gt)
 
-                unwrapped_yaw_seg_ins = np.unwrap(euler_ins[2,:])[[0,-1]]
                 unwrapped_yaw_seg_gt = np.unwrap(euler_gt[2,:])[[0,-1]]
-                unwrapped_yaw_diff = unwrapped_yaw_seg_ins[1] - unwrapped_yaw_seg_ins[0]
                 unwrapped_yaw_diff_gt = unwrapped_yaw_seg_gt[1] - unwrapped_yaw_seg_gt[0]
 
                 y_yaw = unwrapped_yaw_diff_gt - unwrapped_yaw_diff
 
                 y = np.concatenate(([y_yaw], y_pos))
-                y_train.append(y)
-
-                input_feature = (
-                    (ins_step - gp_params.feature_mean) / gp_params.feature_std
-                ).reshape(-1, gp_params.feature_dim)
                 
-                eigvect = hsgp.calc_eigenvectors(input_feature, gp_params.LL, eigvals)
-
                 for idx, outpt in enumerate(outputs) :
                         beta[outpt], P_beta[outpt] = kf.measurement_update(
                             beta[outpt], P_beta[outpt], y[idx], eigvect, gp_params.hyperparameters[outpt][0,3]
                         )
 
+                # Save training data
+                y_train.append(y)
+        # ------------------------------------------------------------------ #
+        # GP correction
+        # ------------------------------------------------------------------ #
+            if True : # not gt_available[seg_end] 
+                # Compute correction predictions
+                preds = np.empty((4,), dtype=float)
+                for idx, outpt in enumerate(outputs):
+                    res = eigvect @ beta[outpt]
+                    preds[idx] = float(res[0])
 
+                # Yaw correction
+                x[8, seg_end] = unwrapped_yaw_seg_ins[1] + preds[0]
+
+                # Position correction
+                x[0:3, seg_end] = pos_ins[:,1] + R_nb_ins[:,:,0] @ preds[1:4]
+
+                # Orientation update
+                quat[:,seg_end] = orientation.dcm2q(
+                    orientation.euler_to_matrix(x[6:9, seg_end])
+                )
 
         # Save results
         zupt_ins_trajectory = Trajectory(
@@ -279,7 +295,7 @@ if __name__ == "__main__":
 
     data_path = PROJECT_ROOT / config["data_path"]
     trial_id = config["trial_id"]
-    sim_config = INSConfig(maximum_distance_m=3)
+    sim_config = INSConfig()
 
     gp_config = HSGPparameters(
         hyperparameters=hyperparameters,
@@ -290,88 +306,51 @@ if __name__ == "__main__":
         LL=config["gp_parameters"]["domain"]
     )
 
-    ins_starttraj_aligned, gt_starttraj_aligned, _, start_segs, x_end, quat_end, R_nprime_n, R_b_bprime = pipeline.compute_aligned_ins_trajectory(
+    ins_traj_aligned, gt_traj_aligned, _, segs, inertial, sim_config = pipeline.compute_aligned_ins_trajectory(
         data_path, trial_id, sim_config
     )
+    print(len(inertial))
+    print(len(gt_traj_aligned))
 
-    trajs_start = {
-        'model' : ins_starttraj_aligned
-    }
-
-    print(f"Number of samples in the starting trajectory : {len(ins_starttraj_aligned)}")
-
-    plot_traj.plot_groundtruth_vs_inertial_positions(trajs_start, gt_starttraj_aligned)
-    plot_traj.plot_groundtruth_vs_inertial_orientations(trajs_start, gt_starttraj_aligned)
+    if ins_traj_aligned.vel is None :
+        raise ValueError("Next step requires velocity information.")
     
-    # Load full datasets
-    inertial = InertialData.from_csv_int(data_path, trial_id)
-    gt_traj = Trajectory.from_csv_int(data_path, trial_id)
-
-    # Rotated intertial data
-    new_a = R_b_bprime.T @ inertial.u[0:3,:]
-    new_w = R_b_bprime.T @ inertial.u[3:6, :]
-    inertial = InertialData(
-        inertial.t,
-        u = np.vstack([new_a, new_w])
-    )
-
-    print(f"Average GT sample time : {np.mean(np.diff(gt_traj.t)):.2f} +- {np.std(np.diff(gt_traj.t)):.2f}")
-    print(f"Average IMU sample time : {np.mean(np.diff(inertial.t)):.2f} +- {np.std(np.diff(inertial.t)):.2f}")
-
-    # Truncate to overlapping time window and align ground truth to IMU timestamps
-    inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
-    gt_traj_aligned_full = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
-
-    sim_config = INSConfig()
-
-    # Truncate data to start after the previous cutoff
-    inertial_trunc = inertial_trunc[start_segs[-1]:]
-    gt_traj_aligned = gt_traj_aligned_full[start_segs[-1]:]
+    # Extract the initial state from the calibration run
+    x_init = np.concatenate([
+        ins_traj_aligned.pos[:,0], 
+        ins_traj_aligned.vel[:,0], 
+        orientation.matrix_to_euler(ins_traj_aligned.R_nb[:,:,0])
+    ])
 
     # Compute INS trajectory from inertial data
-    zupt, ins_traj, segs, y_train, unwrapped_ins_yaw = hybrid_zupt_aided_ins(
-        inertial=inertial_trunc,
+    zupt, hybrid_traj, segs, y_train, unwrapped_ins_yaw = hybrid_nominal_zupt_aided_ins(
+        inertial=inertial,
         simdata=sim_config,
         gt_traj=gt_traj_aligned,
         gp_params=gp_config,
-        x_init=x_end,
-        quat_init=quat_end,
-        R_nprime_n=R_nprime_n,
-        R_b_bprime=R_b_bprime
+        x_init=x_init,
     )
     y_train = np.asarray(y_train).T
 
     trajs = {
-        "model" : ins_traj
+        "model" : ins_traj_aligned,
+        "model + online HSGP" : hybrid_traj
     }
 
-    # Join the calibration and continutation ins trajectories
-    pos_full = np.hstack([ins_starttraj_aligned.pos, ins_traj.pos[:,1:]])
-    if ins_starttraj_aligned.vel is not None and ins_traj.vel is not None :
-        vel_full = np.hstack([ins_starttraj_aligned.vel, ins_traj.vel[:,1:]])
-    else :
-        vel_full = None
-    R_nb_full = np.concatenate([ins_starttraj_aligned.R_nb, ins_traj.R_nb[:,:,1:]], axis=2)
-    t_full = np.concatenate([ins_starttraj_aligned.t, ins_traj.t[1:]])
-
-
-    full_ins_traj = Trajectory(
-        t = t_full,
-        pos = pos_full,
-        R_nb = R_nb_full,
-        vel = vel_full
-    )
-
+    step_traj = {
+        "model" : ins_traj_aligned[segs],
+        "model + online HSGP" : hybrid_traj[segs]
+    }
 
     fig, ax = plt.subplots(1,1)
     ax.plot(unwrapped_ins_yaw)
-    ax.plot(np.unwrap(ins_traj.euler_nb[2,:])[segs])
+    ax.plot(np.unwrap(ins_traj_aligned.euler_nb[2,:])[segs])
 
-    plot_corr.plot_regression_results(
-        y_train[0,:], None, None, y_train[1:4,:], None, None
-    )
-    plot_traj.plot_groundtruth_vs_inertial_positions(trajs, gt_traj_aligned[:2000])
-    plot_traj.plot_groundtruth_vs_inertial_orientations({"model" : ins_traj[segs]}, gt_traj_aligned[segs])
-    plot_traj.plot_position_rmse({"model" : full_ins_traj} , gt_traj_aligned_full)
+    # plot_corr.plot_regression_results(
+    #     y_train[0,:], None, None, y_train[1:4,:], None, None
+    # )
+    plot_traj.plot_groundtruth_vs_inertial_positions(trajs, gt_traj_aligned)
+    plot_traj.plot_groundtruth_vs_inertial_orientations(step_traj, gt_traj_aligned[segs])
+    plot_traj.plot_position_rmse(step_traj , gt_traj_aligned[segs])
     plt.show()
     

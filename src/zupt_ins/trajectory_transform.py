@@ -15,8 +15,7 @@ _CALIBRATION_DISTANCE = 3   # m; length of the trajectory to consider for calibr
 def transform_position(
         ins_traj:Trajectory,
         gt_traj:Trajectory,
-        zupt: NDArray[np.bool],
-        segs: List[int]
+        calib_idxs: NDArray[np.intp],
     ):
     """
     Applies a rigid transformation to the INS trajectory to match the ground truth reference frame.
@@ -35,19 +34,11 @@ def transform_position(
         Trajectory computed from inertial data aligned with GT reference.
     """
 
-    # Last index to use for calibration: first point >3m from start.
-    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))[segs]
-    # b = np.argmax(distances > _CALIBRATION_DISTANCE)
-    b = segs[np.argmax(distances > _CALIBRATION_DISTANCE)] 
-
-    # Calibration indices, excluding ZUPT frames.
-    indices = np.array([i for i in range(0, b + 1) if not zupt[i]])
-
     # Residual function: ground_truth is already interpolated at inertial instants.
     def residuals(x: NDArray[np.floating]):
         R = orientation.euler_to_matrix(np.array([np.pi, 0, x[0]]))
         t = x[1:4, np.newaxis]
-        diff = gt_traj.pos[:, indices] - (R @ ins_traj.pos[:3, indices] + t)
+        diff = gt_traj.pos[:, calib_idxs] - (R @ ins_traj.pos[:3, calib_idxs] + t)
         return diff.ravel()
 
     x0 = np.zeros(4)
@@ -72,7 +63,7 @@ def euler_mse(
         ins_traj: Trajectory,
         gt_traj: Trajectory,
         zupt: NDArray[np.bool],
-        indices: List[int]
+        calib_idxs: List[int]
     ) -> np.ndarray:
     """
     Compute per-sample Euler angle residuals between inertial and ground truth.
@@ -114,7 +105,7 @@ def euler_mse(
     pitch_res = _wrapped_min_residuals(ins_euler[1, zupt], gt_euler[1, zupt])
 
     # Yaw: computed over the calibration window.
-    yaw_res = _wrapped_min_residuals(ins_euler[2, indices], gt_euler[2, indices])
+    yaw_res = _wrapped_min_residuals(ins_euler[2, calib_idxs], gt_euler[2, calib_idxs])
 
     return np.concatenate([roll_res, pitch_res, yaw_res])
 
@@ -123,8 +114,8 @@ def transform_orientation(
         ins_traj: Trajectory,
         gt_traj: Trajectory,
         zupt: NDArray[np.bool],
-        initial_value: NDArray[np.floating],
-        segs: List[int]
+        initial_value: NDArray,
+        calib_idxs: NDArray[np.intp],
     ) -> tuple[Trajectory, NDArray]:
     """
     Optimise the IMU orientation and temporal alignment against ground truth.
@@ -134,22 +125,10 @@ def transform_orientation(
           (i.e. index k in inertial corresponds to index k in ground_truth).
         - The two series fully overlap (no extrapolation needed).
     """
-    # Find the first overlapping index.
-    a = 0
-
-    # Last calibration index: first point more than 3 m from the start.
-    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))[segs]
-    # b = np.argmax(distances > _CALIBRATION_DISTANCE)
-    b = segs[np.argmax(distances > _CALIBRATION_DISTANCE)]
-    print(f"First index farther than {_CALIBRATION_DISTANCE}m : {np.argmax(distances > _CALIBRATION_DISTANCE)}")
-    print(f"First index farther than {_CALIBRATION_DISTANCE}m and at step : {b}")
-
-    # Calibration indices, excluding ZUPT frames.
-    indices = np.array([i for i in range(a, b + 1) if not zupt[i]])
 
     # Optimise rotation to minimise Euler angle MSE.
     result = least_squares(euler_mse, initial_value, method='lm',
-                           args=(ins_traj, gt_traj, zupt, indices))
+                           args=(ins_traj, gt_traj, zupt, calib_idxs))
     R_b_bprime = orientation.euler_to_matrix(result.x)
 
     # Apply optimal rotation to all orientation matrices (post-multiply).

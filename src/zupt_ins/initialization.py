@@ -3,7 +3,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=False)
 class INSConfig:
     """
     Configuration settings for the zero-velocity aided INS Kalman filter.
@@ -73,13 +73,13 @@ class INSConfig:
                                        0.1 * np.pi / 180)
 
     # Gravity — computed post-init if left as None
-    g               : float         = None # type: ignore
+    g : float | NDArray[np.floating]  = None # type: ignore
 
     # ZUPT aided INS - segmentation decision
     segmentation_thrsld: float = 0.1e-3 #  0.1e-3 0.03
 
     # Maximum distance from origin
-    maximum_distance_m: float = np.inf
+    calibration_distance_m: float = 3
 
     def __post_init__(self):
         if self.g is None:

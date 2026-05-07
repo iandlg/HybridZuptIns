@@ -38,7 +38,7 @@ class StepDetector:
 def smoothed_zupt_aided_ins(
         inertial: InertialData,
         simdata: INSConfig,
-    ) -> Tuple[NDArray, Trajectory, List[int], NDArray, NDArray]:
+    ) -> Tuple[NDArray, Trajectory, List[int]]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
 
@@ -56,7 +56,7 @@ def smoothed_zupt_aided_ins(
     """
     u = inertial.u
     Ts = simdata.Ts
-    g = simdata.g
+    g = np.array([0,0,simdata.g]) if isinstance(simdata.g, float) else simdata.g
 
     zupt, _ = detector.detector(u, simdata)
 
@@ -106,7 +106,7 @@ def smoothed_zupt_aided_ins(
 
             # Time update -------------------------------------------------- #
             x[:, n], quat[:, n] = navigation_equations(
-                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g
+                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g # type: ignore
             )
             
             F[:, :, n], G = state_matrix(quat[:, n], u[:, n], Ts)
@@ -130,7 +130,7 @@ def smoothed_zupt_aided_ins(
             # # Segmentation decision ---------------------------------------- #
             detected = step_detector(n, zupt[n])
             if detected is not None:
-                step_seg.append(detected)
+                step_seg.append(n)
                 seg_end = n
                 break
             
@@ -173,25 +173,13 @@ def smoothed_zupt_aided_ins(
         P[0:2, 8, seg_end]    = 0.0
         P[8, 0:2, seg_end]    = 0.0
 
-        distance_at_step = np.sqrt(np.sum((
-                zupt_ins_trajectory.pos[:, 0:1] - zupt_ins_trajectory.pos[:, step_seg[-1]:step_seg[-1]+1]
-            ) ** 2, axis=0))[0]
-        
-
-        if  distance_at_step> simdata.maximum_distance_m :
-            zupt_ins_trajectory = zupt_ins_trajectory[:step_seg[-1]+1]
-            zupt = zupt[:step_seg[-1]+1]
-            break
-
         if seg_end != N - 1:
             seg_start = seg_end + 1
             seg_end   = N - 1
         else:
             break
 
-    quat_out = quat[:,step_seg[-1]]
-    x_out = x[:, step_seg[-1]]    
-    return zupt, zupt_ins_trajectory, step_seg, x_out, quat_out
+    return zupt, zupt_ins_trajectory, step_seg
 
 def initialize_nav(u:NDArray, init_heading: float, init_pos: NDArray)->Tuple[NDArray,NDArray]:
     """
@@ -476,9 +464,7 @@ def navigation_equations(
         u:NDArray,
         q:NDArray,
         Ts:float,
-        g:float,
-        R_nprime_n: NDArray = np.eye(3),
-        R_b_bprime: NDArray = np.eye(3)
+        g:NDArray,
     )->Tuple[NDArray,NDArray]:
     """
     Mechanized navigation equations of the inertial navigation system.
@@ -542,10 +528,9 @@ def navigation_equations(
     # ------------------------------------------------------------------ #
     # Update position and velocity
     # ------------------------------------------------------------------ #
-    g_nprime = R_nprime_n @ np.array([0.0, 0.0, g])
 
     f_t   = Rb2t @ u[:3]           # specific force in navigation frame
-    acc_t = f_t + g_nprime              # remove gravity to get acceleration
+    acc_t = f_t + g              # remove gravity to get acceleration
 
     A = np.eye(6)
     A[0, 3] = Ts
@@ -565,7 +550,7 @@ if __name__ == "__main__":
     inertial = InertialData.from_csv_int(PROJECT_ROOT / "data/angermann_high_precision", 15)
     simdata = INSConfig(segmentation_thrsld=0.03)
     
-    zupt, ins_traj, segs, _, _ = smoothed_zupt_aided_ins(inertial, simdata)
+    zupt, ins_traj, segs = smoothed_zupt_aided_ins(inertial, simdata)
 
     # import matplotlib.pyplot as plt
     # fig, ax = plt.subplots()
