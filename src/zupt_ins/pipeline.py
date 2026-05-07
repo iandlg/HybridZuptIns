@@ -60,13 +60,14 @@ def compute_aligned_ins_trajectory(
     print(f"Length of INS : {len(ins_traj)}")
 
     # Rigidly align position and orientation to ground truth
-    ins_traj_aligned, R, t = transform_position(ins_traj, gt_traj_aligned, zupt, segs)
+    ins_traj_aligned, R_nprime_n, t = transform_position(ins_traj, gt_traj_aligned, zupt, segs)
     print(x_end.shape)
-    x_end[0:3] = (R @ x_end[0:3, None] + t).flatten()
-    x_end[3:6] = (R @ x_end[3:6, None]).flatten()
-    ins_traj_aligned, R_ori = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, orientation_offset, segs)
-    rotated_attitude =  orientation.q2dcm(quat_end) @ R_ori
-    quat_end = orientation.dcm2q(rotated_attitude)
-    x_end[6:9] = orientation.matrix_to_euler(rotated_attitude)
+    x_end[0:3] = (R_nprime_n @ x_end[0:3, None] + t).flatten()
+    x_end[3:6] = (R_nprime_n @ x_end[3:6, None]).flatten()
+    R_end_nprime_b = R_nprime_n @ orientation.q2dcm(quat_end) 
+    ins_traj_aligned, R_b_bprime = transform_orientation(ins_traj_aligned, gt_traj_aligned, zupt, orientation_offset, segs)
+    R_end_nprime_bprime =  R_end_nprime_b @ R_b_bprime
+    quat_end = orientation.dcm2q(R_end_nprime_bprime)
+    x_end[6:9] = orientation.matrix_to_euler(R_end_nprime_bprime)
 
-    return ins_traj_aligned, gt_traj_aligned, zupt, segs, x_end, quat_end, R
+    return ins_traj_aligned, gt_traj_aligned, zupt, segs, x_end, quat_end, R_nprime_n, R_b_bprime

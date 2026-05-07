@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 from numpy.typing import NDArray
-from typing import Union, List, Optional, Tuple
+from typing import Union, List, Optional, Tuple, Sequence
 from scipy.spatial.transform import Rotation, Slerp
 from enum import Enum
 
@@ -124,7 +124,7 @@ class Trajectory(TimeSeries):
             if self.vel.shape != (3,N):
                 raise ValueError(f"vel must be shape (3, {N}), got {self.vel.shape}")
 
-    def __getitem__(self, index: Union[List[int], int, NDArray, slice]) -> "Trajectory":
+    def __getitem__(self, index: Union[Sequence[int], int, NDArray, slice]) -> "Trajectory":
         return Trajectory(
             t=self.t[index],
             pos=self.pos[:,index],

@@ -173,9 +173,12 @@ def smoothed_zupt_aided_ins(
         P[0:2, 8, seg_end]    = 0.0
         P[8, 0:2, seg_end]    = 0.0
 
-        if np.sqrt(np.sum((
-                zupt_ins_trajectory.pos[:, 0:1] - zupt_ins_trajectory.pos[:, step_seg[-1]]
-            ) ** 2, axis=0))[0] > simdata.maximum_distance_m :
+        distance_at_step = np.sqrt(np.sum((
+                zupt_ins_trajectory.pos[:, 0:1] - zupt_ins_trajectory.pos[:, step_seg[-1]:step_seg[-1]+1]
+            ) ** 2, axis=0))[0]
+        
+
+        if  distance_at_step> simdata.maximum_distance_m :
             zupt_ins_trajectory = zupt_ins_trajectory[:step_seg[-1]+1]
             zupt = zupt[:step_seg[-1]+1]
             break
@@ -468,7 +471,15 @@ def state_matrix_closed_form(q: NDArray, u: NDArray, Ts: float)-> Tuple[NDArray,
 
     return Fx, Fu
 
-def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tuple[NDArray,NDArray]:
+def navigation_equations(
+        x:NDArray,
+        u:NDArray,
+        q:NDArray,
+        Ts:float,
+        g:float,
+        R_nprime_n: NDArray = np.eye(3),
+        R_b_bprime: NDArray = np.eye(3)
+    )->Tuple[NDArray,NDArray]:
     """
     Mechanized navigation equations of the inertial navigation system.
 
@@ -506,8 +517,8 @@ def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tu
     # ------------------------------------------------------------------ #
     # Update quaternion given angular rate measurements
     # ------------------------------------------------------------------ #
-    w_tb = u[3:6]
-    P, Q, R = w_tb * Ts  # scaled angular increments
+    w_nb = u[3:6]
+    P, Q, R = w_nb * Ts  # scaled angular increments
 
     OMEGA = 0.5 * np.array([
         [ 0,  R, -Q,  P],
@@ -516,7 +527,7 @@ def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tu
         [-P, -Q, -R,  0]
     ])
 
-    v = np.linalg.norm(w_tb) * Ts
+    v = np.linalg.norm(w_nb) * Ts
     if v != 0:
         q = (np.cos(v / 2) * np.eye(4) + (2 / v) * np.sin(v / 2) * OMEGA) @ q
         q /= np.linalg.norm(q)
@@ -526,19 +537,15 @@ def navigation_equations(x:NDArray, u:NDArray, q:NDArray, Ts:float, g:float)->Tu
     # ------------------------------------------------------------------ #
     Rb2t = orientation.q2dcm(q)
 
-    # y[6] = np.arctan2(Rb2t[2, 1], Rb2t[2, 2])                                      # roll
-    # y[7] = np.arctan2(-Rb2t[2, 0], np.sqrt(Rb2t[2, 1]**2 + Rb2t[2, 2]**2))        # pitch
-    # y[8] = np.arctan2(Rb2t[1, 0], Rb2t[0, 0])                                      # yaw
-
     y[6:9] = orientation.matrix_to_euler(Rb2t)
 
     # ------------------------------------------------------------------ #
     # Update position and velocity
     # ------------------------------------------------------------------ #
-    g_t = np.array([0.0, 0.0, g])
+    g_nprime = R_nprime_n @ np.array([0.0, 0.0, g])
 
     f_t   = Rb2t @ u[:3]           # specific force in navigation frame
-    acc_t = f_t + g_t              # remove gravity to get acceleration
+    acc_t = f_t + g_nprime              # remove gravity to get acceleration
 
     A = np.eye(6)
     A[0, 3] = Ts

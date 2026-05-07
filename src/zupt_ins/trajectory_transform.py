@@ -36,9 +36,9 @@ def transform_position(
     """
 
     # Last index to use for calibration: first point >3m from start.
-    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))
+    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))[segs]
     # b = np.argmax(distances > _CALIBRATION_DISTANCE)
-    b = segs[np.argmax(distances[segs] > _CALIBRATION_DISTANCE)] 
+    b = segs[np.argmax(distances > _CALIBRATION_DISTANCE)] 
 
     # Calibration indices, excluding ZUPT frames.
     indices = np.array([i for i in range(0, b + 1) if not zupt[i]])
@@ -138,9 +138,9 @@ def transform_orientation(
     a = 0
 
     # Last calibration index: first point more than 3 m from the start.
-    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))
+    distances = np.sqrt(np.sum((ins_traj.pos[:, 0:1] - ins_traj.pos) ** 2, axis=0))[segs]
     # b = np.argmax(distances > _CALIBRATION_DISTANCE)
-    b = segs[np.argmax(distances[segs] > _CALIBRATION_DISTANCE)]
+    b = segs[np.argmax(distances > _CALIBRATION_DISTANCE)]
     print(f"First index farther than {_CALIBRATION_DISTANCE}m : {np.argmax(distances > _CALIBRATION_DISTANCE)}")
     print(f"First index farther than {_CALIBRATION_DISTANCE}m and at step : {b}")
 
@@ -150,18 +150,18 @@ def transform_orientation(
     # Optimise rotation to minimise Euler angle MSE.
     result = least_squares(euler_mse, initial_value, method='lm',
                            args=(ins_traj, gt_traj, zupt, indices))
-    R = orientation.euler_to_matrix(result.x)
+    R_b_bprime = orientation.euler_to_matrix(result.x)
 
     # Apply optimal rotation to all orientation matrices (post-multiply).
-    new_ins_R = np.einsum('ijk,kl->ijl', ins_traj.R_nb.transpose(2, 0, 1), R).transpose(1, 2, 0)
+    R_nprime_bprime = np.einsum('ijk,kl->ijl', ins_traj.R_nb.transpose(2, 0, 1), R_b_bprime).transpose(1, 2, 0)
 
     # Return rotated orientations
     return Trajectory(
         t=ins_traj.t,
         pos=ins_traj.pos,
-        R_nb=new_ins_R,
+        R_nb=R_nprime_bprime,
         vel=ins_traj.vel
-    ), R
+    ), R_b_bprime
 
 def _wrapped_min_residuals(ins_vals, gt_vals):
     """Minimum absolute residual across 0, +2π, -2π wrappings."""

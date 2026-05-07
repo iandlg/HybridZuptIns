@@ -44,7 +44,9 @@ def hybrid_zupt_aided_ins(
         gt_traj: Trajectory,
         gp_params : HSGPparameters,
         x_init: NDArray = np.zeros(9),
-        quat_init: NDArray = orientation.dcm2q(np.eye(3))
+        quat_init: NDArray = orientation.dcm2q(np.eye(3)),
+        R_nprime_n: NDArray = np.eye(3),
+        R_b_bprime: NDArray = np.eye(3)
     ) -> Tuple[NDArray, Trajectory, Sequence[int], List[NDArray], List]:
     """
     Run the open-loop zero-velocity aided INS Kalman filter with RTS smoothing.
@@ -134,7 +136,7 @@ def hybrid_zupt_aided_ins(
 
             # Time update -------------------------------------------------- #
             x[:, n], quat[:, n] = navigation_equations(
-                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g
+                x[:, n - 1], u[:, n], quat[:, n - 1], Ts, g, R_nprime_n, R_b_bprime
             )
             
             F[:, :, n], G = state_matrix(quat[:, n], u[:, n], Ts)
@@ -288,7 +290,7 @@ if __name__ == "__main__":
         LL=config["gp_parameters"]["domain"]
     )
 
-    ins_starttraj_aligned, gt_starttraj_aligned, _, start_segs, x_end, quat_end, R = pipeline.compute_aligned_ins_trajectory(
+    ins_starttraj_aligned, gt_starttraj_aligned, _, start_segs, x_end, quat_end, R_nprime_n, R_b_bprime = pipeline.compute_aligned_ins_trajectory(
         data_path, trial_id, sim_config
     )
 
@@ -306,8 +308,8 @@ if __name__ == "__main__":
     gt_traj = Trajectory.from_csv_int(data_path, trial_id)
 
     # Rotated intertial data
-    new_a = R @ inertial.u[0:3,:]
-    new_w = R @ inertial.u[3:6, :]
+    new_a = R_b_bprime.T @ inertial.u[0:3,:]
+    new_w = R_b_bprime.T @ inertial.u[3:6, :]
     inertial = InertialData(
         inertial.t,
         u = np.vstack([new_a, new_w])
@@ -318,13 +320,13 @@ if __name__ == "__main__":
 
     # Truncate to overlapping time window and align ground truth to IMU timestamps
     inertial_trunc, gt_traj_trunc = TimeSeries.truncate_to_overlap(inertial, gt_traj)
-    gt_traj_aligned = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
+    gt_traj_aligned_full = gt_traj_trunc.temporal_alignment(inertial_trunc.t)
 
     sim_config = INSConfig()
 
     # Truncate data to start after the previous cutoff
     inertial_trunc = inertial_trunc[start_segs[-1]:]
-    gt_traj_aligned = gt_traj_aligned[start_segs[-1]:]
+    gt_traj_aligned = gt_traj_aligned_full[start_segs[-1]:]
 
     # Compute INS trajectory from inertial data
     zupt, ins_traj, segs, y_train, unwrapped_ins_yaw = hybrid_zupt_aided_ins(
@@ -333,13 +335,33 @@ if __name__ == "__main__":
         gt_traj=gt_traj_aligned,
         gp_params=gp_config,
         x_init=x_end,
-        quat_init=quat_end
+        quat_init=quat_end,
+        R_nprime_n=R_nprime_n,
+        R_b_bprime=R_b_bprime
     )
     y_train = np.asarray(y_train).T
 
     trajs = {
         "model" : ins_traj
     }
+
+    # Join the calibration and continutation ins trajectories
+    pos_full = np.hstack([ins_starttraj_aligned.pos, ins_traj.pos[:,1:]])
+    if ins_starttraj_aligned.vel is not None and ins_traj.vel is not None :
+        vel_full = np.hstack([ins_starttraj_aligned.vel, ins_traj.vel[:,1:]])
+    else :
+        vel_full = None
+    R_nb_full = np.concatenate([ins_starttraj_aligned.R_nb, ins_traj.R_nb[:,:,1:]], axis=2)
+    t_full = np.concatenate([ins_starttraj_aligned.t, ins_traj.t[1:]])
+
+
+    full_ins_traj = Trajectory(
+        t = t_full,
+        pos = pos_full,
+        R_nb = R_nb_full,
+        vel = vel_full
+    )
+
 
     fig, ax = plt.subplots(1,1)
     ax.plot(unwrapped_ins_yaw)
@@ -349,6 +371,7 @@ if __name__ == "__main__":
         y_train[0,:], None, None, y_train[1:4,:], None, None
     )
     plot_traj.plot_groundtruth_vs_inertial_positions(trajs, gt_traj_aligned[:2000])
-    plot_traj.plot_groundtruth_vs_inertial_orientations(trajs, gt_traj_aligned[segs])
+    plot_traj.plot_groundtruth_vs_inertial_orientations({"model" : ins_traj[segs]}, gt_traj_aligned[segs])
+    plot_traj.plot_position_rmse({"model" : full_ins_traj} , gt_traj_aligned_full)
     plt.show()
     

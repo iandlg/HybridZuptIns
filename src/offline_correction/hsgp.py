@@ -277,7 +277,7 @@ if __name__ == "__main__" :
     trial_id = 15
 
     # Compute INS trajectory
-    ins_traj_aligned, gt_traj_aligned, zupt, segs = pipeline.compute_aligned_ins_trajectory(
+    ins_traj_aligned, gt_traj_aligned, zupt, segs, _, _, _, _ = pipeline.compute_aligned_ins_trajectory(
         data_path=data_path,
         trial_id=trial_id,
     )
